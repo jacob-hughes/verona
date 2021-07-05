@@ -2,15 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-#include <aal/aal.h>
-#include <ds/bits.h>
-#include <pal/pal.h>
-#include <stdint.h>
+#ifdef __FreeBSD__
+#  define SNMALLOC_USE_THREAD_CLEANUP 1
+#endif
+#define SNMALLOC_PLATFORM_HAS_GETENTROPY 1
+#include <backend/backend.h>
+#include <mem/commonconfig.h>
+#include <mem/corealloc.h>
+#include <mem/localalloc.h>
+#include <mem/pool.h>
+#include <mem/slaballocator.h>
+#include <process_sandbox/helpers.h>
+#include <process_sandbox/sandbox_fd_numbers.h>
 
 namespace snmalloc
 {
-  template<typename T>
-  struct SuperslabMap;
   class Superslab;
   class Mediumslab;
   class Largeslab;
@@ -18,158 +24,213 @@ namespace snmalloc
 
 namespace sandbox
 {
-  /**
-   * The proxy pagemap.  In the sandboxed process, there are two parts of the
-   * pagemap.  The child process maintains a private pagemap for process-local
-   * memory, the parent process maintains a fragment of this pagemap
-   * corresponding to the shared memory region.
-   *
-   * This class is responsible for managing the composition of the two page
-   * maps.  All queries are local but updates must be forwarded to either the
-   * parent process or the private pagemap.
-   */
-  struct ProxyPageMap
+  struct SnmallocBackend
   {
     /**
-     * Singleton instance of this class.
+     * Expose a PAL that doesn't do allocation.
      */
-    static ProxyPageMap p;
+    using Pal = snmalloc::PALNoAlloc<snmalloc::DefaultPal>;
+
     /**
-     * Accessor, returns the singleton instance of this class.
+     * Proxy that requests memory from the parent process.
      */
-    static ProxyPageMap& pagemap()
+    class ProxyAddressSpaceManager
     {
-      return p;
+      /**
+       * Non-templated version of reserve_with_left_over.  Calls the parent
+       * process to request a new chunk of memory.
+       */
+      snmalloc::CapPtr<void, snmalloc::CBChunk> reserve(size_t size);
+
+      /**
+       * Lock that protects the RPC channel.
+       */
+      std::atomic_flag spin_lock = ATOMIC_FLAG_INIT;
+
+    public:
+      /**
+       * Public interface.
+       */
+      template<bool>
+      snmalloc::CapPtr<void, snmalloc::CBChunk>
+      reserve_with_left_over(size_t size)
+      {
+        return reserve(size);
+      }
+    };
+
+    /**
+     * Thread-local state.  Currently not used.
+     */
+    struct LocalState
+    {};
+
+    /**
+     * Global state, shared among all allocators.
+     */
+    class GlobalState
+    {
+      /**
+       * The back-end accesses some fields of this directly.
+       */
+      friend struct SnmallocBackend;
+
+      /**
+       * Private address-space manager.  Used to manage allocations that are
+       * not shared with the parent.
+       */
+      snmalloc::AddressSpaceManager<snmalloc::DefaultPal> private_asm;
+
+      /**
+       * Proxy to access the address-space manager in the parent.
+       */
+      ProxyAddressSpaceManager heap_asm;
+
+    public:
+      /**
+       * The pagemap that spans the entire address space.
+       */
+      snmalloc::FlatPagemap<
+        snmalloc::MIN_CHUNK_BITS,
+        snmalloc::MetaEntry,
+        snmalloc::DefaultPal,
+        /*fixed range*/ false>
+        pagemap;
+    };
+
+    /**
+     * Return the metadata associated with an address.  This reads the
+     * read-only mapping of the pagemap directly.
+     */
+    template<bool potentially_out_of_range = false>
+    static const snmalloc::MetaEntry&
+    get_meta_data(GlobalState& h, snmalloc::address_t p)
+    {
+      return h.pagemap.template get<potentially_out_of_range>(p);
     }
+
     /**
-     * Helper function used by the set methods that are part of the page map
-     * interface.  Requires that the address (`p`) is in the shared region.
-     * This writes the required change as a message to the parent process and
-     * spins waiting for the parent to make the required update.
+     * Set the metadata associated with an address range.  Sends an RPC to the
+     * parent, which validates the entry.
      */
-    void set(snmalloc::address_t p, uint8_t x);
+    static void set_meta_data(
+      GlobalState& h,
+      snmalloc::address_t p,
+      size_t size,
+      snmalloc::MetaEntry t);
+
     /**
-     * Get the pagemap entry for a specific address.
+     * Allocate a chunk of memory and install its metadata in the pagemap.
+     * This performs a single RPC that validates the metadata and then
+     * allocates and installs the entry.
      */
-    static uint8_t get(snmalloc::address_t p);
+    static std::
+      pair<snmalloc::CapPtr<void, snmalloc::CBChunk>, snmalloc::Metaslab*>
+      alloc_chunk(
+        GlobalState& h,
+        LocalState* local_state,
+        size_t size,
+        snmalloc::RemoteAllocator* remote,
+        snmalloc::sizeclass_t sizeclass);
+
     /**
-     * Get the pagemap entry for a specific address.
+     * Allocate metadata.  This allocates non-shared memory for metaslabs and
+     * shared memory for allocators.
      */
-    static uint8_t get(void* p);
-    /**
-     * Type-safe interface for setting that a particular memory region contains
-     * a superslab. This calls `set`.
-     */
-    void set_slab(snmalloc::Superslab* slab);
-    /**
-     * Type-safe interface for notifying that a region no longer contains a
-     * superslab.  Calls `set`.
-     */
-    void clear_slab(snmalloc::Superslab* slab);
-    /**
-     * Type-safe interface for notifying that a region no longer contains a
-     * medium slab.  Calls `set`.
-     */
-    void clear_slab(snmalloc::Mediumslab* slab);
-    /**
-     * Type-safe interface for setting that a particular memory region contains
-     * a medium slab. This calls `set`.
-     */
-    void set_slab(snmalloc::Mediumslab* slab);
-    /**
-     * Type-safe interface for setting the pagemap values for a region to
-     * indicate a large allocation.
-     */
-    void set_large_size(void* p, size_t size);
-    /**
-     * The inverse operation of `set_large_size`, updates a range to indicate
-     * that it is not in use.
-     */
-    void clear_large_size(void* p, size_t size);
+    template<typename T>
+    static snmalloc::CapPtr<void, snmalloc::CBChunk>
+    alloc_meta_data(GlobalState& h, LocalState*, size_t size);
   };
 
   /**
-   * The proxy memory provider.  This uses a simple RPC protocol to forward all
-   * requests to the parent process, which validates the arguments and forwards
-   * them to the trusted address-space manager for the sandbox.
+   * The snmalloc configuration used for the child process.
    */
-  struct MemoryProviderProxy
+  class SnmallocGlobals : public snmalloc::CommonConfig
   {
     /**
-     * The PAL that we use inside the sandbox.  This is incapable of
-     * allocating memory.
+     * The allocator pool type used to allocate per-thread allocators.
      */
-    typedef snmalloc::PALNoAlloc<snmalloc::DefaultPal> Pal;
+    using AllocPool =
+      snmalloc::PoolState<snmalloc::CoreAllocator<SnmallocGlobals>>;
 
     /**
-     * Pop a large allocation from the stack to the address space manager in
-     * the parent process corresponding to a large size class.
+     * The state associated with the chunk allocator.
      */
-    void* pop_large_stack(size_t large_class);
+    inline static snmalloc::ChunkAllocatorState chunk_alloc_state;
 
     /**
-     * Push a large allocation to the address space manager in the parent
-     * process.
+     * The concrete instance of the pool allocator.
      */
-    void push_large_stack(snmalloc::Largeslab* slab, size_t large_class);
+    inline static AllocPool alloc_pool;
+
+  public:
+    /**
+     * The type of the back end.  This is used directly from snmalloc.
+     */
+    using Backend = SnmallocBackend;
 
     /**
-     * Reserve committed memory of a large size class size by calling into the
-     * parent to request address space in the shared region.
+     * Returns the singleton back-end global state object.
      */
-    void* reserve_committed(size_t large_class) noexcept;
-
-    /**
-     * Reserve a range of memory identified by a size, not a size class.  This
-     * is used only in `alloc_chunk` and is not inlined because its
-     * implementation needs to refer to snmalloc size classes, which are
-     * defined only in a header inclusion that requires this class to be
-     * defined.
-     */
-    void* reserve_committed_size(size_t size) noexcept;
-
-    /**
-     * Public interface to reserve memory.  Ignores the `committed` argument,
-     * the shared memory is always committed.
-     */
-    template<bool committed>
-    void* reserve(size_t large_class) noexcept
+    static Backend::GlobalState& get_backend_state()
     {
-      return reserve_committed(large_class);
+      static SnmallocBackend::GlobalState backend_state;
+      return backend_state;
     }
 
     /**
-     * Factory method, used by the `Singleton` helper.  This is responsible for
-     * any bootstrapping needed to communicate with the parent.
+     * Returns the allocation pool.
      */
-    static MemoryProviderProxy* make() noexcept;
+    static AllocPool& pool()
+    {
+      return alloc_pool;
+    }
 
     /**
-     * Allocate a chunk.  This implementation is wasteful, rounding the
-     * requested sizes up to the smallest large size class (typically one MiB).
-     * This is called only twice in normal use for a sandbox, so wasting a bit
-     * of address space is not the highest priority fix yet.  Given how little
-     * this is actually needed, a better implementation would reserve some
-     * space in the non-heap shared memory region for these requests.
+     * Ensure that all of the early bootstrapping is done.
      */
-    template<typename T, size_t alignment, typename... Args>
-    T* alloc_chunk(Args&&... args)
-    {
-      // Cache line align
-      size_t size = snmalloc::bits::align_up(sizeof(T), 64);
-      size = snmalloc::bits::next_pow2(snmalloc::bits::max(size, alignment));
-      void* p = reserve_committed_size(size);
-      if (p == nullptr)
-        return nullptr;
+    static void ensure_init() noexcept;
 
-      return new (p) T(std::forward<Args...>(args)...);
+    /**
+     * Returns true if the system has bootstrapped, false otherwise.
+     */
+    static bool is_initialised();
+
+    /**
+     * Message queues are currently always allocated inline for
+     * in-sandbox allocators.  When we move to dynamically creating
+     * shared memory objects one per chunk then they will move to a
+     * separate place.
+     */
+    constexpr static snmalloc::Options Options{};
+
+    /**
+     * Register per-thread cleanup.
+     */
+    static void register_clean_up()
+    {
+#ifndef SNMALLOC_USE_THREAD_CLEANUP
+      snmalloc::register_clean_up();
+#endif
+    }
+
+    /**
+     * Returns the singleton instance of the chunk allocator state.
+     */
+    static snmalloc::ChunkAllocatorState& get_slab_allocator_state(void*)
+    {
+      return chunk_alloc_state;
     }
   };
 }
 
-#define SNMALLOC_DEFAULT_CHUNKMAP sandbox::ProxyPageMap
-#define SNMALLOC_DEFAULT_MEMORY_PROVIDER sandbox::MemoryProviderProxy
-#ifdef __FreeBSD__
-#  define SNMALLOC_USE_THREAD_CLEANUP 1
-#endif
-#include "override/malloc.cc"
+#define SNMALLOC_PROVIDE_OWN_CONFIG
+namespace snmalloc
+{
+  /**
+   * The standard allocator type that we provide.
+   */
+  using Alloc = LocalAllocator<sandbox::SnmallocGlobals>;
+}
+
+#include <override/malloc.cc>
