@@ -202,7 +202,7 @@ namespace sandbox
      * shared memory objects one per chunk then they will move to a
      * separate place.
      */
-    constexpr static snmalloc::Options Options{};
+    constexpr static snmalloc::Flags Options{};
 
     /**
      * Register per-thread cleanup.

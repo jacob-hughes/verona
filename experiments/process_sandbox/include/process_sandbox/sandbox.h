@@ -363,7 +363,7 @@ namespace sandbox
      * aren't per-thread, they're allocated and deallocated by the sandbox
      * library.
      */
-    constexpr static snmalloc::Options Options{
+    constexpr static snmalloc::Flags Options{
       .IsQueueInline = false,
       .CoreAllocOwnsLocalState = false,
       .CoreAllocIsPoolAllocated = false,
