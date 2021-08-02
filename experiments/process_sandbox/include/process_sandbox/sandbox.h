@@ -21,14 +21,6 @@
 
 #include <snmalloc.h>
 
-#ifndef SANDBOX_PAGEMAP
-#  ifdef SNMALLOC_DEFAULT_PAGEMAP
-#    define SANDBOX_PAGEMAP SNMALLOC_DEFAULT_PAGEMAP
-#  else
-#    define SANDBOX_PAGEMAP snmalloc::SuperslabMap
-#  endif
-#endif
-
 namespace sandbox
 {
   struct SharedMemoryRegion;
