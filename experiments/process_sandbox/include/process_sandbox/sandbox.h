@@ -258,12 +258,6 @@ namespace sandbox
     }
 
     /**
-     * Shared allocators always have an external message queue that is in the
-     * shared memory region.
-     */
-    constexpr static bool IsQueueInline = false;
-
-    /**
      * Allocate a chunk, its associated metaslab, and install its metadata
      * entry in the pagemap.  This allocates the chunk in the sandbox-shared
      * memory region and the metaslab in host-owned memory.  This means that
