@@ -45,6 +45,15 @@ namespace
 
 namespace sandbox
 {
+  SharedMemoryProvider::SharedMemoryProvider(
+    void* start, size_t size, Pagemap& pagemap)
+  : base(start), top(pointer_offset(base, size))
+  {
+    // Force initialisation of the shared memory object backing the pagemap.
+    SharedAllocConfig::ensure_initialised();
+    shared_asm.add_range(
+      snmalloc::CapPtr<void, snmalloc::CBChunk>{start}, size, pagemap);
+  }
   /**
    * Singleton class that handles pagemap updates from children.  This listens
    * on a socket for updates, validates that they correspond to the memory that
@@ -129,10 +138,9 @@ namespace sandbox
           case MemoryProviderReserve:
           {
             size_t large_size = static_cast<size_t>(rpc.args[0]);
-            reply = {
-              0,
-              reinterpret_cast<uintptr_t>(s->reserve(
-                large_size, SharedAllocGlobals::get_backend_state().pagemap))};
+            reply = {0,
+                     reinterpret_cast<uintptr_t>(
+                       s->reserve(large_size, SharedAllocConfig::pagemap))};
             break;
           }
           case MetadataSet:
@@ -163,8 +171,7 @@ namespace sandbox
               break;
             }
             void* alloc = s->reserve(
-              static_cast<size_t>(rpc.args[0]),
-              SharedAllocGlobals::get_backend_state().pagemap);
+              static_cast<size_t>(rpc.args[0]), SharedAllocConfig::pagemap);
             if (alloc == nullptr)
             {
               reply.error = 1;
@@ -220,7 +227,7 @@ namespace sandbox
     {
       size_t range_size;
       void* base_address = address;
-      bool is_fake = m.get_remote() == SharedAllocGlobals::fake_large_remote;
+      bool is_fake = m.get_remote() == SharedAllocConfig::fake_large_remote;
       if (is_fake)
       {
         range_size = 1 << m.get_sizeclass();
@@ -242,19 +249,19 @@ namespace sandbox
       {
         return false;
       }
-      auto& h = SharedAllocGlobals::get_backend_state();
       // Protect against a race where the child tries to claim ownership of a
       // chunk of memory at the same time as the parent.  In the case of a
       // conflict, the trusted parent is allowed to take ownership so that we
       // don't leak a metaslab in the parent.
-      std::lock_guard g(h.pagemap_lock);
+      std::lock_guard g(SharedAllocConfig::pagemap_lock);
       auto p = snmalloc::address_cast(address);
-      auto* old = h.pagemap.template get<false>(p).get_remote();
+      auto* old =
+        SharedAllocConfig::pagemap.template get<false>(p).get_remote();
       if ((old != nullptr) && !s->contains(old, sizeof(*old)))
       {
         return false;
       }
-      h.pagemap.set(p, m);
+      SharedAllocConfig::pagemap.set(p, m);
       return true;
     }
 
@@ -567,8 +574,7 @@ namespace sandbox
   {
     wait_for_child_exit();
     {
-      auto& h = SharedAllocGlobals::get_backend_state();
-      std::lock_guard(h.pagemap_lock);
+      std::lock_guard g{SharedAllocConfig::pagemap_lock};
       snmalloc::address_t base =
         snmalloc::address_cast(memory_provider.get_base());
       auto top = snmalloc::address_cast(memory_provider.top_address());
@@ -578,7 +584,7 @@ namespace sandbox
       // shared memory region is deallocated.
       for (snmalloc::address_t a = base; a < top; a += snmalloc::MIN_CHUNK_SIZE)
       {
-        auto& meta = SharedAllocBackend::get_meta_data(h, a);
+        auto& meta = SharedAllocConfig::get_meta_data(a);
         auto* remote = meta.get_remote();
         if (
           (remote != nullptr) &&
@@ -587,7 +593,7 @@ namespace sandbox
           delete meta.get_metaslab();
         }
         // Reset all of these pagemap entries to unused.
-        SharedAllocBackend::set_meta_data(h, a, 1, {nullptr, 0});
+        SharedAllocConfig::set_meta_data(a, 1, {nullptr, 0});
       }
     }
     shared_mem->destroy();
@@ -673,11 +679,9 @@ namespace sandbox
     memory_provider(
       pointer_offset(shm.get_base(), sizeof(SharedMemoryRegion)),
       shm.get_size() - sizeof(SharedMemoryRegion),
-      SharedAllocGlobals::get_backend_state().pagemap),
+      SharedAllocConfig::pagemap),
     callback_dispatcher(std::make_unique<CallbackDispatcher>())
   {
-    // Force initialisation of the shared memory object backing the pagemap.
-    SharedAllocGlobals::get_backend_state();
     void* shm_base = shm.get_base();
     // Allocate the shared memory region and set its memory provider to use all
     // of the space after the end of the header for subsequent allocations.
@@ -726,7 +730,7 @@ namespace sandbox
         library_name,
         librunnerpath,
         shm_base,
-        SharedAllocGlobals::get_backend_state().pagemap_mem.get_handle(),
+        SharedAllocConfig::pagemap_mem.get_handle(),
         std::move(malloc_rpc_sockets.second),
         std::move(socks.second));
     });
@@ -734,7 +738,7 @@ namespace sandbox
     // Allocate an allocator in the shared memory region.
 
     allocator = std::make_unique<SharedAlloc>();
-    core_alloc = std::make_unique<snmalloc::CoreAllocator<SharedAllocGlobals>>(
+    core_alloc = std::make_unique<snmalloc::CoreAllocator<SharedAllocConfig>>(
       &allocator->get_local_cache(), &memory_provider);
     core_alloc->init_message_queue(&shared_mem->allocator_state);
     allocator->init(core_alloc.get());
@@ -834,8 +838,8 @@ namespace sandbox
 
   template<>
   snmalloc::CapPtr<void, snmalloc::CBChunk>
-  SharedAllocBackend::alloc_meta_data<snmalloc::Metaslab>(
-    GlobalState&, LocalState*, size_t size)
+  SharedAllocConfig::alloc_meta_data<snmalloc::Metaslab>(
+    LocalState*, size_t size)
   {
     SANDBOX_INVARIANT(
       size == sizeof(snmalloc::Metaslab),

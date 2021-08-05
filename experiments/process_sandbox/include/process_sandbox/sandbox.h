@@ -27,6 +27,7 @@ namespace sandbox
   class CallbackDispatcher;
   class ExportedFileTree;
   struct CallbackHandlerBase;
+  class Library;
 
   /**
    * An snmalloc Platform Abstraction Layer (PAL) that cannot be used to
@@ -105,16 +106,11 @@ namespace sandbox
      * range without first calling the `reserve` method on this class to
      * acquire a chunk.
      */
-    SharedMemoryProvider(void* start, size_t size, Pagemap& pagemap)
-    : base(start), top(pointer_offset(base, size))
-    {
-      shared_asm.add_range(
-        snmalloc::CapPtr<void, snmalloc::CBChunk>{start}, size, pagemap);
-    }
+    SharedMemoryProvider(void* start, size_t size, Pagemap& pagemap);
 
     /**
      * Returns the chunk allocator state for this sandbox.  This is called only
-     * by the corresponding method in the `SharedAllocGlobals` class, which is
+     * by the corresponding method in the `SharedAllocConfig` class, which is
      * called from snmalloc.
      */
     snmalloc::ChunkAllocatorState& get_slab_allocator_state()
@@ -163,10 +159,10 @@ namespace sandbox
    * Snmalloc back-end structure for shared memory allocations.  This defines
    * how snmalloc will interact with allocations that are per-sandbox.
    *
-   * We provide a single shared pagemap for all sandboxes.  Each sandbox must
-   * allocate allocators and
+   * Globals used by the snmalloc instances that allocate sandbox memory from
+   * the outside.
    */
-  struct SharedAllocBackend
+  struct SharedAllocConfig : public snmalloc::CommonConfig
   {
     /**
      * The local state object contains all of the per-sandbox state.
@@ -180,40 +176,25 @@ namespace sandbox
     using Pal = NoOpPal;
 
     /**
-     * The global allocator state shared by all sandbox instances.  This
-     * contains the pagemap but is not aware of any sandboxes.
+     * Shared memory object backing the pagemap.  Every compartment has a
+     * read-only view of this that is mapped into its address space on start.
      */
-    struct GlobalState
-    {
-      /**
-       * Shared memory object backing the pagemap.  Every compartment has a
-       * read-only view of this that is mapped into its address space on start.
-       */
-      platform::SharedMemoryMap pagemap_mem{static_cast<uint8_t>(
-        snmalloc::bits::next_pow2_bits_const(Pagemap::required_size()))};
+    inline static platform::SharedMemoryMap pagemap_mem{static_cast<uint8_t>(
+      snmalloc::bits::next_pow2_bits_const(Pagemap::required_size()))};
 
-      /**
-       * Concrete instance of a pagemap.  This is updated only with
-       * `pagemap_lock` held.
-       */
-      Pagemap pagemap;
+    /**
+     * Concrete instance of a pagemap.  This is updated only with
+     * `pagemap_lock` held.
+     */
+    inline static Pagemap pagemap;
 
-      /**
-       * Mutex that must be held while writing to the pagemap.
-       */
-      std::mutex pagemap_lock;
-
-      /**
-       * Construct the global state object.  This allocates the huge region for
-       * the pagemap (512 GiB currently, subject to change) and initialises the
-       * pagemap object to point to it.
-       */
-      GlobalState()
-      {
-        pagemap.init(
-          static_cast<snmalloc::MetaEntry*>((pagemap_mem.get_base())));
-      }
-    };
+    /**
+     * Mutex that must be held while writing to the pagemap.
+     *
+     * This is a recursive mutex because it must be held during destruction
+     * of a `Library` and by each call to `set_meta_data` in that destructor.
+     */
+    inline static std::recursive_mutex pagemap_lock;
 
     /**
      * Look up the metadata entry for an address.  This is called by snmalloc
@@ -221,10 +202,9 @@ namespace sandbox
      * the deallocating allocator, where to find the metadata.
      */
     template<bool potentially_out_of_range = false>
-    static const snmalloc::MetaEntry&
-    get_meta_data(GlobalState& h, snmalloc::address_t p)
+    static const snmalloc::MetaEntry& get_meta_data(snmalloc::address_t p)
     {
-      return h.pagemap.template get<potentially_out_of_range>(p);
+      return pagemap.template get<potentially_out_of_range>(p);
     }
 
     /**
@@ -246,14 +226,14 @@ namespace sandbox
      * but we cannot leak out-of-sandbox metaslabs as a result of activity by
      * the child.
      */
-    static void set_meta_data(
-      GlobalState& h, snmalloc::address_t p, size_t size, snmalloc::MetaEntry t)
+    static void
+    set_meta_data(snmalloc::address_t p, size_t size, snmalloc::MetaEntry t)
     {
-      std::lock_guard(h.pagemap_lock);
+      std::lock_guard g(pagemap_lock);
       for (snmalloc::address_t a = p; a < p + size;
            a += snmalloc::MIN_CHUNK_SIZE)
       {
-        h.pagemap.set(a, t);
+        pagemap.set(a, t);
       }
     }
 
@@ -267,13 +247,12 @@ namespace sandbox
     static std::
       pair<snmalloc::CapPtr<void, snmalloc::CBChunk>, snmalloc::Metaslab*>
       alloc_chunk(
-        GlobalState& h,
         LocalState* local_state,
         size_t size,
         snmalloc::RemoteAllocator* remote,
         snmalloc::sizeclass_t sizeclass)
     {
-      auto p = local_state->reserve(size, h.pagemap);
+      auto p = local_state->reserve(size, pagemap);
       if (p == nullptr)
       {
         return {nullptr, nullptr};
@@ -285,7 +264,7 @@ namespace sandbox
            a < snmalloc::address_cast(pointer_offset(p, size));
            a += snmalloc::MIN_CHUNK_SIZE)
       {
-        h.pagemap.set(a, t);
+        pagemap.set(a, t);
       }
       return {snmalloc::CapPtr<void, snmalloc::CBChunk>{p}, meta};
     }
@@ -307,29 +286,7 @@ namespace sandbox
      */
     template<typename T>
     static snmalloc::CapPtr<void, snmalloc::CBChunk>
-    alloc_meta_data(GlobalState&, LocalState*, size_t size);
-  };
-
-  /**
-   * Globals used by the snmalloc instances that allocate sandbox memory from
-   * the outside.
-   */
-  struct SharedAllocGlobals : public snmalloc::CommonConfig
-  {
-    /**
-     * The back end type.  Used by snmalloc.
-     */
-    using Backend = SharedAllocBackend;
-
-    /**
-     * Return a singleton reference to the backend's global state.  This is
-     * shared between all sandboxes.
-     */
-    static Backend::GlobalState& get_backend_state()
-    {
-      static Backend::GlobalState backend;
-      return backend;
-    };
+    alloc_meta_data(LocalState*, size_t size);
 
     /**
      * Return the slab allocator.  This is per sandbox: memory must not be
@@ -349,11 +306,33 @@ namespace sandbox
      * aren't per-thread, they're allocated and deallocated by the sandbox
      * library.
      */
-    constexpr static snmalloc::Flags Options{
-      .IsQueueInline = false,
-      .CoreAllocOwnsLocalState = false,
-      .CoreAllocIsPoolAllocated = false,
-      .LocalAllocSupportsLazyInit = false};
+    constexpr static snmalloc::Flags Options{.IsQueueInline = false,
+                                             .CoreAllocOwnsLocalState = false,
+                                             .CoreAllocIsPoolAllocated = false,
+                                             .LocalAllocSupportsLazyInit =
+                                               false};
+
+  private:
+    friend class SharedMemoryProvider;
+
+    /**
+     * Construct the global state object.  This allocates the huge region for
+     * the pagemap (512 GiB currently, subject to change) and initialises the
+     * pagemap object to point to it.
+     *
+     * This does not use snmalloc's lazy initialisation logic because we need
+     * to create the shared memory *before* we create any allocators.  It is
+     * called in SharedMemoryProvider's constructor.
+     */
+    inline static void ensure_initialised()
+    {
+      static std::atomic<bool> isInitialised = false;
+      if (isInitialised)
+      {
+        return;
+      }
+      pagemap.init(static_cast<snmalloc::MetaEntry*>((pagemap_mem.get_base())));
+    }
   };
 
   /**
@@ -378,7 +357,7 @@ namespace sandbox
      * memory region, and updates both the child and parent views of the
      * pagemap when allocating new slabs.
      */
-    using SharedAlloc = snmalloc::LocalAllocator<SharedAllocGlobals>;
+    using SharedAlloc = snmalloc::LocalAllocator<SharedAllocConfig>;
 
     /**
      * A pointer to the core allocator.  Each snmalloc allocator is a pair of a
@@ -386,7 +365,7 @@ namespace sandbox
      * operations and is managed by the latter, which provides fast-path
      * operations.
      */
-    std::unique_ptr<snmalloc::CoreAllocator<SharedAllocGlobals>> core_alloc;
+    std::unique_ptr<snmalloc::CoreAllocator<SharedAllocConfig>> core_alloc;
 
     /**
      * The allocator used for allocating memory inside this sandbox.

@@ -189,7 +189,7 @@ bool SnmallocGlobals::is_initialised()
 namespace sandbox
 {
   snmalloc::CapPtr<void, snmalloc::CBChunk>
-  SnmallocBackend::ProxyAddressSpaceManager::reserve(size_t size)
+  SnmallocGlobals::reserve(size_t size)
   {
     SNMALLOC_ASSERT(size >= sizeof(void*));
 
@@ -204,8 +204,8 @@ namespace sandbox
     return res;
   }
 
-  void SnmallocBackend::set_meta_data(
-    GlobalState&, snmalloc::address_t p, size_t size, snmalloc::MetaEntry t)
+  void SnmallocGlobals::set_meta_data(
+    snmalloc::address_t p, size_t size, snmalloc::MetaEntry t)
   {
     requestHostService(
       MetadataSet,
@@ -217,17 +217,15 @@ namespace sandbox
 
   template<>
   snmalloc::CapPtr<void, snmalloc::CBChunk>
-  SnmallocBackend::alloc_meta_data<snmalloc::Metaslab>(
-    GlobalState& h, LocalState*, size_t size)
+  SnmallocGlobals::alloc_meta_data<snmalloc::Metaslab>(LocalState*, size_t size)
   {
     size = snmalloc::bits::next_pow2(size);
-    return h.private_asm.reserve<true>(size, h.pagemap);
+    return private_asm.reserve<true>(size, pagemap);
   }
 
   template<>
-  snmalloc::CapPtr<void, snmalloc::CBChunk> SnmallocBackend::alloc_meta_data<
-    snmalloc::CoreAllocator<sandbox::SnmallocGlobals>>(
-    GlobalState&, LocalState*, size_t size)
+  snmalloc::CapPtr<void, snmalloc::CBChunk> SnmallocGlobals::alloc_meta_data<
+    snmalloc::CoreAllocator<sandbox::SnmallocGlobals>>(LocalState*, size_t size)
   {
     size = snmalloc::bits::next_pow2(size);
     auto* result =
@@ -236,16 +234,15 @@ namespace sandbox
   }
 
   std::pair<snmalloc::CapPtr<void, snmalloc::CBChunk>, snmalloc::Metaslab*>
-  SnmallocBackend::alloc_chunk(
-    SnmallocBackend::GlobalState& h,
-    SnmallocBackend::LocalState*,
+  SnmallocGlobals::alloc_chunk(
+    SnmallocGlobals::LocalState*,
     size_t size,
     snmalloc::RemoteAllocator* remote,
     snmalloc::sizeclass_t sizeclass)
   {
     // TODO: Check this doesn't actually write to the pagemap.
     auto* ms =
-      new (h.private_asm.reserve<true>(sizeof(snmalloc::Metaslab), h.pagemap)
+      new (private_asm.reserve<true>(sizeof(snmalloc::Metaslab), pagemap)
              .unsafe_ptr()) snmalloc::Metaslab();
     auto result = requestHostService(
       AllocChunk,
@@ -380,13 +377,13 @@ namespace
 
     auto* base = static_cast<snmalloc::MetaEntry*>(mmap(
       nullptr,
-      decltype(SnmallocBackend::GlobalState::pagemap)::required_size(),
+      decltype(SnmallocGlobals::pagemap)::required_size(),
       PROT_READ,
       MAP_SHARED | platform::detail::map_nocore,
       PageMapPage,
       0));
     SANDBOX_INVARIANT(base != MAP_FAILED, "Mapping pagemap failed");
-    SnmallocGlobals::get_backend_state().pagemap.init(base);
+    SnmallocGlobals::pagemap.init(base);
 
     done_bootstrapping = true;
   }
