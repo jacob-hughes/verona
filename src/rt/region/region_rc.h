@@ -81,6 +81,8 @@ namespace verona::rt
       /* desc |=  1UL; */
 
       auto o = (Object*)Object::register_object(p, desc);
+      incref(o);
+      assert(o->get_ref_count() == 1);
       assert(Object::debug_is_aligned(o));
 
       // Add to the ring.
