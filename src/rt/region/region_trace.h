@@ -50,7 +50,7 @@ namespace verona::rt
     friend class Freeze;
     friend class Region;
 
-  private:
+  protected:
     enum RingKind
     {
       TrivialRing,
@@ -300,7 +300,7 @@ namespace verona::rt
       UNUSED(o);
     }
 
-  private:
+  protected:
     inline void append(Object* hd)
     {
       append(hd, hd);

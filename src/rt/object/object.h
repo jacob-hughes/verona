@@ -231,6 +231,7 @@ namespace verona::rt
     static constexpr uintptr_t MASK = ALIGNMENT - 1;
     static constexpr uint8_t SHIFT = (uint8_t)bits::next_pow2_bits_const(MASK);
     static constexpr size_t ONE_RC = 1 << SHIFT;
+    static constexpr size_t INFINITY_RC = 0x7;
 
 #ifdef USE_SYSTEMATIC_TESTING
     // Used to give objects unique identifiers for systematic testing.
@@ -423,6 +424,7 @@ namespace verona::rt
     friend class RegionBase;
     friend class RegionTrace;
     friend class RegionArena;
+    friend class RegionRc;
     friend class RememberedSet;
     friend class ExternalReferenceTable;
     template<typename Entry>
@@ -603,6 +605,40 @@ namespace verona::rt
     {
       assert(get_class() == RegionMD::MARKED);
       get_header().bits &= ~(size_t)RegionMD::MARKED;
+    }
+
+    inline bool incref_mut() {
+      uintptr_t rc = get_ref_count();
+      if (rc == INFINITY_RC) {
+          return true;
+      }
+      rc += ONE_RC;
+      set_ref_count(rc);
+
+      return rc == INFINITY_RC;
+    }
+
+    inline bool decref_mut() {
+      uintptr_t rc = get_ref_count();
+      assert(rc != 0);
+
+      if (rc == ONE_RC) {
+          return true;
+      }
+
+      rc -= ONE_RC;
+      set_ref_count(rc);
+      return false;
+    }
+
+    inline void set_ref_count(uint8_t rc) {
+      get_header().descriptor.store(
+        (const Descriptor*)((uintptr_t)get_descriptor() | (uintptr_t)rc),
+        std::memory_order_relaxed);
+    }
+
+    inline uintptr_t get_ref_count() {
+      return  ((uintptr_t) (get_header().descriptor.load(std::memory_order_relaxed)) & MARK_MASK);
     }
 
   public:

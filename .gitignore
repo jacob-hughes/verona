@@ -7,3 +7,4 @@ CMakeFiles/
 /Testing/
 compile_commands.json
 .*.swp
+.clangd/
