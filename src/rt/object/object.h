@@ -423,6 +423,7 @@ namespace verona::rt
     friend class RegionBase;
     friend class RegionTrace;
     friend class RegionArena;
+    friend class RegionRc;
     friend class RememberedSet;
     friend class ExternalReferenceTable;
     template<typename Entry>

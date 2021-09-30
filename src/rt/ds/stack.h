@@ -45,7 +45,7 @@ namespace verona::rt
       T* data[STACK_COUNT];
     };
 
-  private:
+  protected:
     static_assert(
       sizeof(Block) == alignof(Block), "Size and align must be equal");
 
