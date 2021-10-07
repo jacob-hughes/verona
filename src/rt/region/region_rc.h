@@ -28,6 +28,18 @@ namespace verona::rt
   template<class T, class Alloc>
   class RegionVector
   {
+    public:
+
+      struct Elem {
+          Object* object;
+          T metadata;
+      };
+
+      union Element {
+          Element* next;
+          Elem item;
+      };
+
     static constexpr size_t ITEM_COUNT = 32;
     static_assert(
       snmalloc::bits::next_pow2_const(ITEM_COUNT) == ITEM_COUNT,
@@ -36,13 +48,15 @@ namespace verona::rt
     static constexpr size_t BLOCK_COUNT = ITEM_COUNT - 1;
     static constexpr uintptr_t EMPTY_MASK = 1 << 0;
 
+
     struct alignas(ITEM_COUNT * sizeof(T)) Block
     {
-      T prev;
-      T data[BLOCK_COUNT];
+      Element prev;
+      Element data[BLOCK_COUNT];
     };
 
   private:
+
     // Dummy block to effectively allow pointer arithmetic on nullptr
     // which is undefined behaviour.  So we statically allocate a block
     // to represent the end of the vec.
@@ -51,33 +65,33 @@ namespace verona::rt
     // Index of the full dummy block
     // Due to pointer arithmetic with nullptr being undefined behaviour
     // we use a statically allocated null block.
-    static constexpr T* null_index = &(null_block.data[BLOCK_COUNT - 1]);
+    static constexpr Element* null_index = &(null_block.data[BLOCK_COUNT - 1]);
 
     /// Mask to access the index component of the pointer to a block.
-    static constexpr uintptr_t INDEX_MASK = (ITEM_COUNT - 1) * sizeof(T);
+    static constexpr uintptr_t INDEX_MASK = (ITEM_COUNT- 1) * sizeof(T);
 
     /// Pointer into a block.  As the blocks are strongly aligned
     /// the bits 9-3 represent the element in the block, with 0 being
     /// a pointer to the `prev` pointer, and implying the empty block.
-    T* index;
+    Element* index;
 
     // Used to thread a freelist pointer through the vec.
-    T* next_free;
+    Element* next_free;
 
     /// Takes an index and returns the pointer to the Block
-    static Block* get_block(T* ptr)
+    static Block* get_block(Element* ptr)
     {
       return snmalloc::pointer_align_down<sizeof(Block), Block>(ptr);
     }
 
     /// Checks if an index into a block means the block is empty.
-    static bool is_empty(T* ptr)
+    static bool is_empty(Element* ptr)
     {
       return ((uintptr_t)ptr & INDEX_MASK) == 0;
     }
 
     /// Checks if an index into a block means the block has no space.
-    static bool is_full(T* index)
+    static bool is_full(Element* index)
     {
       return ((uintptr_t)index & INDEX_MASK) == INDEX_MASK;
     }
@@ -96,18 +110,17 @@ namespace verona::rt
       auto local_block = get_block(index);
       while (local_block != &null_block)
       {
-        auto prev_ptr = *(T**)&(local_block->prev);
-        auto prev = get_block(prev_ptr);
+        auto prev = get_block(local_block->prev);
         alloc.template dealloc<sizeof(Block)>(local_block);
         local_block = prev;
       }
       index = null_index;
     }
 
-    ALWAYSINLINE void remove(T* index)
+    ALWAYSINLINE void remove(Elem* index)
     {
       *(uintptr_t*)index = ((uintptr_t)next_free | EMPTY_MASK);
-      next_free = index;
+      next_free = (Element*) index;
     }
 
     /// returns true if this vector is empty
@@ -117,45 +130,44 @@ namespace verona::rt
     }
 
     /// Return the top element of the vector without removing it.
-    ALWAYSINLINE T* peek()
+    ALWAYSINLINE Elem* peek()
     {
       assert(!empty());
-      return index;
+      return &(index->item);
     }
 
     /// Push an element to the back of the vector.
-    ALWAYSINLINE T* push(T item, Alloc& alloc)
+    ALWAYSINLINE Elem* push(Elem item, Alloc& alloc)
     {
       if (next_free != nullptr)
       {
-        uintptr_t prev = *(uintptr_t*)next_free;
-        *next_free = item;
-        T* cur = next_free;
-        next_free = (T*)(prev & ~EMPTY_MASK);
-        return cur;
+        Element* prev = next_free->next;
+        next_free->item = item;
+        Element* cur = next_free;
+        next_free = (Element*)((uintptr_t) prev & ~EMPTY_MASK);
+        return &(cur->item);
       }
       if (!is_full(index))
       {
         index++;
-        *index = item;
-        return index;
+        index->item = item;
+        return &(index->item);
       }
       return push_slow(item, alloc);
     }
 
   private:
     /// Slow path for push, performs a push, when allocation is required.
-    T* push_slow(T item, Alloc& alloc)
+    Elem* push_slow(Elem item, Alloc& alloc)
     {
       assert(is_full(index));
 
       Block* next = (Block*)alloc.template alloc<sizeof(Block)>();
       assert(((uintptr_t)next) % alignof(Block) == 0);
-      T** prev = (T**)&next->prev;
-      *prev = index;
+      next->prev.next = index;
       index = &(next->data[0]);
-      *index = item;
-      return index;
+      index->item = item;
+      return &(index->item);
     }
 
   public:
@@ -176,20 +188,21 @@ namespace verona::rt
         ptr = vec->peek();
       }
 
-      iterator(RegionVector<T, Alloc>* vec, T* p) : vec(vec), ptr(p) {}
+      iterator(RegionVector<T, Alloc>* vec, Elem* p) : vec(vec), ptr(p) {}
 
       iterator operator++()
       {
         ptr--;
-        if (ptr != vec->null_index)
+        auto maybe_ptr = (Element*) ptr;
+        if (maybe_ptr != vec->null_index)
         {
-          if (!vec->is_empty(ptr))
+          if (!vec->is_empty(maybe_ptr))
           {
             next_non_empty();
             return *this;
           }
-          ptr = *(T**)&(vec->get_block(ptr)->prev);
-          if (ptr != vec->null_index)
+          maybe_ptr = vec->get_block(maybe_ptr)->prev.next;
+          if (maybe_ptr != vec->null_index)
           {
             next_non_empty();
             return *this;
@@ -209,7 +222,7 @@ namespace verona::rt
         return ptr == other.ptr;
       }
 
-      inline ObjectCount* operator*() const
+      inline Elem* operator*() const
       {
         return ptr;
       }
@@ -227,7 +240,7 @@ namespace verona::rt
       inline void next_non_empty()
       {
         uintptr_t objptr = *(uintptr_t*)ptr;
-        while (objptr & EMPTY_MASK && !vec->is_empty(ptr))
+        while (objptr & EMPTY_MASK && !vec->is_empty((Element*)ptr))
         {
           ptr--;
           objptr = *(uintptr_t*)ptr;
@@ -235,7 +248,7 @@ namespace verona::rt
       }
 
       RegionVector<T, Alloc>* vec;
-      T* ptr;
+      Elem* ptr;
     };
   };
 
@@ -261,8 +274,8 @@ namespace verona::rt
     friend class Region;
 
   private:
-    RegionVector<ObjectCount, Alloc> trivial_counts{};
-    RegionVector<ObjectCount, Alloc> non_trivial_counts{};
+    RegionVector<uintptr_t, Alloc> trivial_counts{};
+    RegionVector<uintptr_t, Alloc> non_trivial_counts{};
 
     // Memory usage in the region.
     size_t current_memory_used = 0;
@@ -290,12 +303,12 @@ namespace verona::rt
       return o->is_type(desc());
     }
 
-    inline RegionVector<ObjectCount, Alloc>* get_trivial_vec()
+    inline RegionVector<uintptr_t, Alloc>* get_trivial_vec()
     {
       return &trivial_counts;
     }
 
-    inline RegionVector<ObjectCount, Alloc>* get_non_trivial_vec()
+    inline RegionVector<uintptr_t, Alloc>* get_non_trivial_vec()
     {
       return &non_trivial_counts;
     }
@@ -358,27 +371,27 @@ namespace verona::rt
       assert(Object::debug_is_aligned(o));
 
       // Add to the region vector and create a back pointer.
-      ObjectCount* oc = nullptr;
+      RegionVector<uintptr_t, Alloc>::Elem* oc = nullptr;
       if (in->is_trivial())
         oc = reg->get_trivial_vec()->push({o, 1}, alloc);
       else
         oc = reg->get_non_trivial_vec()->push({o, 1}, alloc);
-      o->set_rv_index(oc);
+      o->set_rv_index((Object*) oc);
 
       // GC heuristics.
       reg->use_memory(desc->size);
       return o;
     }
 
-    static ObjectCount* debug_get_rv_index(Object* o)
+    static RegionVector<uintptr_t, Alloc>::Elem* debug_get_rv_index(Object* o)
     {
-      return o->get_rv_index();
+      return (RegionVector<uintptr_t, Alloc>::Elem*) o->get_rv_index();
     }
 
     static uintptr_t debug_get_ref_count(Object* o)
     {
-      ObjectCount* oc = (ObjectCount*)o->get_rv_index();
-      return oc->count;
+      auto elem = (RegionVector<uintptr_t, Alloc>::Elem*)o->get_rv_index();
+      return elem->metadata;
     }
 
   private:
