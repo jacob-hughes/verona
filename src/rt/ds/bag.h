@@ -218,6 +218,13 @@ namespace verona::rt
     }
   };
 
+  template<class T, class U>
+  struct BagElem
+  {
+    T* object;
+    U metadata;
+  };
+
   /**
    * This class contains the core functionality for a bag using aligned blocks
    * which is optimised for constant time insertion and removal.
@@ -233,47 +240,21 @@ namespace verona::rt
    * item `T` must be at least 1 machine word in size.
    */
   template<class T, class U, class Alloc>
-  class Bag
+  class Bag : public BagBase<BagElem<T, U>, Alloc>
   {
   public:
-    struct Elem
-    {
-      T* object;
-      U metadata;
-    };
+    using Elem = BagElem<T, U>;
     using B = BagBase<Elem, Alloc>;
     using iterator = typename B::iterator;
 
-  private:
-    B bag;
-
   public:
-    /// Deallocate the linked blocks for this bag.
-    void dealloc(Alloc& alloc)
-    {
-      bag.dealloc(alloc);
-    }
+    Bag<T, U, Alloc>() : BagBase<Elem, Alloc>() {}
+  };
 
-    ALWAYSINLINE void remove(Elem* item)
-    {
-      bag.remove(item);
-    }
-
-    /// Insert an element into the bag.
-    ALWAYSINLINE Elem* insert(Elem item, Alloc& alloc)
-    {
-      return bag.insert(item, alloc);
-    }
-
-    inline iterator begin()
-    {
-      return iterator(&bag);
-    }
-
-    inline iterator end()
-    {
-      return iterator(&bag, B::null_index);
-    }
+  template<class T>
+  struct BagThinElem
+  {
+    T* object;
   };
 
   /**
@@ -284,46 +265,15 @@ namespace verona::rt
    * element holds only a `T*`, without an additional field.
    */
   template<class T, class Alloc>
-  class BagThin
+  class BagThin : public BagBase<BagThinElem<T>, Alloc>
   {
   public:
-    struct Elem
-    {
-      T* object;
-    };
+    using Elem = BagThinElem<T>;
     using B = BagBase<Elem, Alloc>;
     using iterator = typename B::iterator;
 
-  private:
-    B bag;
-
   public:
-    /// Deallocate the linked blocks for this bag.
-    void dealloc(Alloc& alloc)
-    {
-      bag.dealloc(alloc);
-    }
-
-    ALWAYSINLINE void remove(Elem* item)
-    {
-      bag.remove(item);
-    }
-
-    /// Insert an element into the bag.
-    ALWAYSINLINE Elem* insert(Elem item, Alloc& alloc)
-    {
-      return bag.insert(item, alloc);
-    }
-
-    inline iterator begin()
-    {
-      return iterator(&bag);
-    }
-
-    inline iterator end()
-    {
-      return iterator(&bag, B::null_index);
-    }
+    BagThin<T, Alloc>() : BagBase<Elem, Alloc>() {}
   };
 
 } // namespace verona::rt
