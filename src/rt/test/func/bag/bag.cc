@@ -10,113 +10,208 @@
 using namespace snmalloc;
 using namespace verona::rt;
 
-using B = Bag<uintptr_t, uintptr_t, Alloc>;
-using E = B::Elem*;
-
-void test_iter()
+void test_bag()
 {
-  auto& alloc = ThreadAlloc::get();
-
-  B bag;
-  B::iterator iter(&bag);
-
-  for (auto entry : iter)
+  using B = Bag<uintptr_t, uintptr_t, Alloc>;
+  using E = B::Elem*;
   {
-    UNUSED(entry);
-    check(false);
+    auto& alloc = ThreadAlloc::get();
+
+    B bag;
+    for (auto entry : bag)
+    {
+      UNUSED(entry);
+      check(false);
+    }
+
+    auto item = bag.insert({nullptr, 123}, alloc);
+
+    // Check that iter is setup correctly when the index points to a hole.
+    auto item2 = bag.insert({nullptr, 456}, alloc);
+    bag.remove(item2);
+
+    for (auto entry : bag)
+    {
+      check(entry == item);
+    }
+    bag.dealloc(alloc);
   }
-
-  auto item = bag.insert({nullptr, 123}, alloc);
-
-  // Check that iter is setup correctly when the index points to a hole.
-  auto item2 = bag.insert({nullptr, 456}, alloc);
-  bag.remove(item2);
-
-  for (auto entry : iter)
   {
-    check(entry == item);
+    auto& alloc = ThreadAlloc::get();
+
+    B bag;
+
+    const int NUM_OBJECTS = 127;
+
+    // Allocate a bunch of objects so that the region vector uses many
+    // allocation blocks to track each object in the region.
+    for (uintptr_t i = 0; i < NUM_OBJECTS; i++)
+    {
+      bag.insert({nullptr, i}, alloc);
+    }
+
+    // Iterate through the bag and make sure that all the
+    // entries make sense.
+    /* B::iterator iter(&bag); */
+
+    E rm1 = nullptr;
+    E rm2 = nullptr;
+    E rm3 = nullptr;
+
+    uintptr_t count = 0;
+    for (auto entry : bag)
+    {
+      check(entry->metadata == (NUM_OBJECTS - count - 1));
+
+      if (count == 5)
+        rm1 = entry;
+
+      if (count == 40)
+        rm2 = entry;
+
+      if (count == 100)
+        rm3 = entry;
+      count++;
+    }
+
+    check(count == NUM_OBJECTS);
+
+    std::unordered_set<uintptr_t> removed = {
+      (uintptr_t)rm1, (uintptr_t)rm2, (uintptr_t)rm3};
+
+    bag.remove(rm1);
+    bag.remove(rm2);
+    bag.remove(rm3);
+
+    // Check that the iterator skips over holes left in the region vector
+    count = 0;
+    for (auto item : bag)
+    {
+      UNUSED(item);
+      count++;
+    }
+    assert(count == NUM_OBJECTS - 3);
+
+    // Check that the freelist is used to fill existing holes before bump
+    // allocation.
+    auto idx1 = bag.insert({nullptr, 123}, alloc);
+    check(removed.count((uintptr_t)idx1));
+
+    auto idx2 = bag.insert({nullptr, 456}, alloc);
+    check(removed.count((uintptr_t)idx2));
+
+    auto idx3 = bag.insert({nullptr, 789}, alloc);
+    check(removed.count((uintptr_t)idx3));
+
+    // And that new allocations go back to bump allocation
+    auto idx4 = bag.insert({nullptr, 10}, alloc);
+    check(!removed.count((uintptr_t)idx4));
+
+    bag.dealloc(alloc);
   }
-  bag.dealloc(alloc);
 }
 
-void test_iter_advanced()
+void test_bagthin()
 {
-  auto& alloc = ThreadAlloc::get();
-
-  B bag;
-
-  const int NUM_OBJECTS = 127;
-
-  // Allocate a bunch of objects so that the region vector uses many
-  // allocation blocks to track each object in the region.
-  for (uintptr_t i = 0; i < NUM_OBJECTS; i++)
+  using B = BagThin<uintptr_t, Alloc>;
+  using E = B::Elem*;
   {
-    bag.insert({nullptr, i}, alloc);
+    auto& alloc = ThreadAlloc::get();
+
+    B bag;
+    for (auto entry : bag)
+    {
+      UNUSED(entry);
+      check(false);
+    }
+
+    auto item = bag.insert({nullptr}, alloc);
+
+    // Check that iter is setup correctly when the index points to a hole.
+    auto item2 = bag.insert({nullptr}, alloc);
+    bag.remove(item2);
+
+    for (auto entry : bag)
+    {
+      check(entry == item);
+    }
+    bag.dealloc(alloc);
   }
-
-  // Iterate through the bag and make sure that all the
-  // entries make sense.
-  B::iterator iter(&bag);
-
-  E rm1 = nullptr;
-  E rm2 = nullptr;
-  E rm3 = nullptr;
-
-  uintptr_t count = 0;
-  for (auto entry : iter)
   {
-    check(entry->metadata == (NUM_OBJECTS - count - 1));
+    auto& alloc = ThreadAlloc::get();
 
-    if (count == 5)
-      rm1 = entry;
+    B bag;
 
-    if (count == 40)
-      rm2 = entry;
+    const int NUM_OBJECTS = 127;
 
-    if (count == 100)
-      rm3 = entry;
-    count++;
+    // Allocate a bunch of objects so that the region vector uses many
+    // allocation blocks to track each object in the region.
+    for (uintptr_t i = 0; i < NUM_OBJECTS; i++)
+    {
+      bag.insert({nullptr}, alloc);
+    }
+
+    // Iterate through the bag and make sure that all the
+    // entries make sense.
+
+    E rm1 = nullptr;
+    E rm2 = nullptr;
+    E rm3 = nullptr;
+
+    uintptr_t count = 0;
+    for (auto entry : bag)
+    {
+      if (count == 5)
+        rm1 = entry;
+
+      if (count == 40)
+        rm2 = entry;
+
+      if (count == 100)
+        rm3 = entry;
+      count++;
+    }
+
+    check(count == NUM_OBJECTS);
+
+    std::unordered_set<uintptr_t> removed = {
+      (uintptr_t)rm1, (uintptr_t)rm2, (uintptr_t)rm3};
+
+    bag.remove(rm1);
+    bag.remove(rm2);
+    bag.remove(rm3);
+
+    // Check that the iterator skips over holes left in the region vector
+    count = 0;
+    for (auto item : bag)
+    {
+      UNUSED(item);
+      count++;
+    }
+    assert(count == NUM_OBJECTS - 3);
+
+    // Check that the freelist is used to fill existing holes before bump
+    // allocation.
+    auto idx1 = bag.insert({nullptr}, alloc);
+    check(removed.count((uintptr_t)idx1));
+
+    auto idx2 = bag.insert({nullptr}, alloc);
+    check(removed.count((uintptr_t)idx2));
+
+    auto idx3 = bag.insert({nullptr}, alloc);
+    check(removed.count((uintptr_t)idx3));
+
+    // And that new allocations go back to bump allocation
+    auto idx4 = bag.insert({nullptr}, alloc);
+    check(!removed.count((uintptr_t)idx4));
+
+    bag.dealloc(alloc);
   }
-
-  check(count == NUM_OBJECTS);
-
-  std::unordered_set<uintptr_t> removed = {
-    (uintptr_t)rm1, (uintptr_t)rm2, (uintptr_t)rm3};
-
-  bag.remove(rm1);
-  bag.remove(rm2);
-  bag.remove(rm3);
-
-  // Check that the iterator skips over holes left in the region vector
-  count = 0;
-  for (auto item : iter)
-  {
-    UNUSED(item);
-    count++;
-  }
-  assert(count == NUM_OBJECTS - 3);
-
-  // Check that the freelist is used to fill existing holes before bump
-  // allocation.
-  auto idx1 = bag.insert({nullptr, 123}, alloc);
-  check(removed.count((uintptr_t)idx1));
-
-  auto idx2 = bag.insert({nullptr, 456}, alloc);
-  check(removed.count((uintptr_t)idx2));
-
-  auto idx3 = bag.insert({nullptr, 789}, alloc);
-  check(removed.count((uintptr_t)idx3));
-
-  // And that new allocations go back to bump allocation
-  auto idx4 = bag.insert({nullptr, 10}, alloc);
-  check(!removed.count((uintptr_t)idx4));
-
-  bag.dealloc(alloc);
 }
 
 int main(int, char**)
 {
-  test_iter();
-  test_iter_advanced();
+  test_bag();
+  test_bagthin();
   return 0;
 }
