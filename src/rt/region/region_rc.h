@@ -329,14 +329,16 @@ namespace verona::rt
       static_assert(
         type == Trivial || type == NonTrivial || type == AllObjects);
 
-      iterator(RegionRc* r, BagBase<RefCount, Alloc>::iterator counts) : reg(r), counts(counts)
+      iterator(RegionRc* r, BagBase<RefCount, Alloc>::iterator counts)
+      : reg(r), counts(counts)
       {
         counts = r->counts.begin();
         ptr = (*counts)->object;
         next();
       }
 
-      iterator(RegionRc* r, BagBase<RefCount, Alloc>::iterator counts, Object* p)
+      iterator(
+        RegionRc* r, BagBase<RefCount, Alloc>::iterator counts, Object* p)
       : reg(r), counts(counts), ptr(p)
       {}
 
