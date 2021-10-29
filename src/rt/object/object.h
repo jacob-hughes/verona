@@ -498,6 +498,20 @@ namespace verona::rt
       get_header().next = (Object*)rc;
     }
 
+    inline void set_header_ref_count(uintptr_t count)
+    {
+      assert(count <= 7);
+    }
+
+    inline uintptr_t get_header_ref_count()
+    {
+      // For performance, the atomicity can be casted away because region ref
+      // counts are only ever accessed in a single-threaded context.
+      // Unfortunately though, this is still undefined behaviour.
+      // auto descriptor = (uintptr_t) get_header().descriptor;
+      return 0;
+    }
+
     inline void set_next(Object* o)
     {
       assert(get_class() == RegionMD::UNMARKED);

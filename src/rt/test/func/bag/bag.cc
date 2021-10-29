@@ -114,7 +114,7 @@ void test_bag()
 void test_bagthin()
 {
   using B = BagThin<uintptr_t, Alloc>;
-  using E = B::Elem*;
+  using E = uintptr_t*;
   {
     auto& alloc = ThreadAlloc::get();
 

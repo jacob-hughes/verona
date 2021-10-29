@@ -265,15 +265,14 @@ namespace verona::rt
    * element holds only a `T*`, without an additional field.
    */
   template<class T, class Alloc>
-  class BagThin : public BagBase<BagThinElem<T>, Alloc>
+  class BagThin : public BagBase<T*, Alloc>
   {
   public:
-    using Elem = BagThinElem<T>;
-    using B = BagBase<Elem, Alloc>;
+    using B = BagBase<T*, Alloc>;
     using iterator = typename B::iterator;
 
   public:
-    BagThin<T, Alloc>() : BagBase<Elem, Alloc>() {}
+    BagThin<T, Alloc>() : BagBase<T*, Alloc>() {}
   };
 
 } // namespace verona::rt

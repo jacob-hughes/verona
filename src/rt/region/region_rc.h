@@ -36,6 +36,11 @@ namespace verona::rt
   private:
     static constexpr uintptr_t FINALISER_MASK = 1 << 1;
 
+    // Tracks objects allocated by the region, where the ref count is stored in the objects header.
+    BagThin<Object, Alloc> objects{};
+
+    // Tracks objects allocated by the region alongside their reference count. This is used as overspill
+    // when the refcount is too high to fit in the object's header.
     RefCounts counts{};
 
     RefCount* entry_point_count = nullptr;
@@ -125,7 +130,8 @@ namespace verona::rt
       auto o = (Object*)Object::register_object(p, desc);
       assert(Object::debug_is_aligned(o));
 
-      o->set_ref_count(reg->track_object(o, alloc));
+      o->set_header_ref_count(1);
+      reg->track_object(o, alloc);
 
       // GC heuristics.
       reg->use_memory(desc->size);
@@ -144,6 +150,18 @@ namespace verona::rt
         RegionRc* reg = get(in);
         reg->entry_point_count->metadata += 1;
         return;
+      }
+      auto header_rc = o->get_header_ref_count();
+      if (header_rc == 7) {
+        RefCount* rc = o->get_ref_count();
+        rc->metadata += 1;
+        return;
+      }
+
+      if (header_rc == 6) {
+        o->set_header_ref_count(7);
+        
+
       }
       RefCount* rc = o->get_ref_count();
       rc->metadata += 1;
@@ -329,19 +347,20 @@ namespace verona::rt
       static_assert(
         type == Trivial || type == NonTrivial || type == AllObjects);
 
-      iterator(RegionRc* r, RefCounts::iterator counts) : reg(r), counts(counts)
+      iterator(RegionRc* r, BagThin<Object, Alloc>::iterator objects, RefCounts::iterator counts) : reg(r), objects(objects), counts(counts)
       {
         counts = r->counts.begin();
         ptr = (*counts)->object;
         next();
       }
 
-      iterator(RegionRc* r, RefCounts::iterator counts, Object* p)
-      : reg(r), counts(counts), ptr(p)
+      iterator(RegionRc* r, BagThin<Object, Alloc>::iterator objects, RefCounts::iterator counts, Object* p)
+      : reg(r), objects(objects), counts(counts), ptr(p)
       {}
 
     private:
       RegionRc* reg;
+      BagThin<Object, Alloc>::iterator objects;
       RefCounts::iterator counts;
       Object* ptr;
 
@@ -355,7 +374,11 @@ namespace verona::rt
       {
         if constexpr (type == AllObjects)
         {
-          ptr = (*counts)->object;
+          if (objects != objects.end()) {
+            ptr = **objects;
+          } else {
+            ptr = (*counts)->object; 
+          }
           return;
         }
         else if constexpr (type == NonTrivial)
@@ -401,13 +424,13 @@ namespace verona::rt
     template<IteratorType type = AllObjects>
     inline iterator<type> begin()
     {
-      return {this, counts.begin()};
+      return {this, objects.begin(), counts.begin()};
     }
 
     template<IteratorType type = AllObjects>
     inline iterator<type> end()
     {
-      return {this, counts.end(), nullptr};
+      return {this, objects.end(), counts.end(), nullptr};
     }
 
   private:
@@ -416,12 +439,12 @@ namespace verona::rt
       current_memory_used += size;
     }
 
-    RefCount* track_object(Object* o, Alloc& alloc)
+    void track_object(Object* o, Alloc& alloc)
     {
       auto tagged = (uintptr_t)o;
       if (!(o->is_trivial()))
         tagged |= FINALISER_MASK;
-      return counts.insert({(Object*)tagged, 1}, alloc);
+      objects.insert({(Object*)tagged}, alloc);
     }
   };
 
