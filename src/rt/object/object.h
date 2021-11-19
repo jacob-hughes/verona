@@ -499,20 +499,24 @@ namespace verona::rt
       return (Object*)(get_header().bits & ~MASK);
     }
 
-    inline RefCount* get_ref_count()
+    inline size_t get_ref_count()
     {
       assert(
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
-      return (RefCount*)(get_header().bits & ~MASK);
+      return (size_t)(get_header().bits & ~MASK);
     }
 
-    inline void set_ref_count(RefCount* rc)
+    inline void set_ref_count(size_t count)
     {
-      // The MARKED/UNMARKED tags are not used by RegionRc, so we don't need to
-      // bother restoring the bit, and can simply leave it unset (i.e.
-      // UNMARKED).
-      get_header().next = (Object*)rc;
+      assert(
+        (get_class() == RegionMD::MARKED) ||
+        (get_class() == RegionMD::UNMARKED));
+      get_header().bits = count | get_class();
+    }
+
+    inline void init_ref_count() {
+      get_header().bits = 1 | RegionMD::UNMARKED;
     }
 
     inline void set_next(Object* o)

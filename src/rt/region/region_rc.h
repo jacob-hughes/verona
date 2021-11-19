@@ -36,9 +36,7 @@ namespace verona::rt
   private:
     static constexpr uintptr_t FINALISER_MASK = 1 << 1;
 
-    RefCounts counts{};
-
-    RefCount* entry_point_count = nullptr;
+    size_t entry_point_count = 0;
 
     // Objects which may be in a cycle, so will be checked by gc_cycles.
     // FIXME: Use two stacks to simulate per-block queue based behaviour.
@@ -46,6 +44,8 @@ namespace verona::rt
 
     // Memory usage in the region.
     size_t current_memory_used = 0;
+
+    size_t region_size = 0;
 
     RegionRc() : RegionBase() {}
 
@@ -93,12 +93,12 @@ namespace verona::rt
         p = alloc.alloc<size>();
       o = Object::register_object(p, desc);
 
+      reg->region_size += 1;
+
       reg->init_next(o);
       o->init_iso();
       o->set_region(reg);
 
-      auto rc = reg->track_object(o, alloc);
-      reg->entry_point_count = rc;
 
       assert(Object::debug_is_aligned(o));
       return o;
@@ -129,11 +129,18 @@ namespace verona::rt
       auto o = (Object*)Object::register_object(p, desc);
       assert(Object::debug_is_aligned(o));
 
-      o->set_ref_count(reg->track_object(o, alloc));
+      o->init_ref_count();
 
       // GC heuristics.
       reg->use_memory(desc->size);
+      reg->region_size += 1;
       return o;
+    }
+
+    static void open(Object* o) {
+      UNUSED(o);
+      // assert(ol->get_class() == RegionMD::ISO);
+      // auto tlalloc = &ThreadAlloc::get();
     }
 
     /// Increments the reference count of `o`. The object `in` is the entry
@@ -146,11 +153,10 @@ namespace verona::rt
       if (o == in)
       {
         RegionRc* reg = get(in);
-        reg->entry_point_count->metadata += 1;
+        reg->entry_point_count += 1;
         return;
       }
-      RefCount* rc = o->get_ref_count();
-      rc->metadata += 1;
+      o->set_ref_count(o->get_ref_count() + 1);
 
       // TODO: Currently we don't remove items from the Lins stack because
       // there is no way to find the object in the stack without an O(n) pass.
@@ -165,7 +171,7 @@ namespace verona::rt
       if (o == in)
       {
         RegionRc* reg = get(in);
-        reg->entry_point_count->metadata -= 1;
+        reg->entry_point_count -= 1;
       }
       else if (decref_inner(o))
       {
@@ -184,15 +190,14 @@ namespace verona::rt
 
     /// Get the reference count of `o`. The object `in` is the entry point to
     /// the region that contains `o`.
-    static uintptr_t get_ref_count(Object* o, Object* in)
+    static size_t get_ref_count(Object* o, Object* in)
     {
       if (o == in)
       {
         RegionRc* reg = get(in);
-        return reg->entry_point_count->metadata;
+        return reg->entry_point_count;
       }
-      RefCount* rc = o->get_ref_count();
-      return rc->metadata;
+      return o->get_ref_count();
     }
 
     /** Removes cyclic garbage from the region.
@@ -303,10 +308,8 @@ namespace verona::rt
           }
 
           RegionRc* reg = get(f);
-          reg->entry_point_count->metadata -= 1;
-        }
-        else
-        {
+          reg->entry_point_count -= 1;
+        } else {
           decref_inner(f);
         }
 
@@ -455,9 +458,8 @@ namespace verona::rt
 
     inline static bool decref_inner(Object* o)
     {
-      RefCount* rc = o->get_ref_count();
-      rc->metadata -= 1;
-      return (rc->metadata == 0);
+      o->set_ref_count(o->get_ref_count() -1);
+      return (o->get_ref_count() == 0);
     }
 
     static void dealloc_object(Alloc& alloc, Object* o, Object* in)
@@ -481,7 +483,7 @@ namespace verona::rt
           case Object::ISO:
             if (p == in)
             {
-              reg->entry_point_count->metadata -= 1;
+              reg->entry_point_count -= 1;
             }
             else
             {
@@ -532,10 +534,6 @@ namespace verona::rt
       while (!objects.empty())
       {
         Object* o = objects.pop();
-        if (o->get_class() != RegionMD::ISO)
-        {
-          counts.remove(o->get_ref_count());
-        }
 
         if constexpr (finalisation == NonCyclic)
         {
@@ -544,6 +542,7 @@ namespace verona::rt
             o->finalise(this, sub_regions);
           }
         }
+        region_size -= 1;
         o->destructor();
         o->dealloc(alloc);
       }
@@ -569,135 +568,10 @@ namespace verona::rt
         else if (RegionArena::is_arena_region(r))
           ((RegionArena*)r)->release_internal(alloc, o, sub_regions);
         else if (RegionRc::is_rc_region(r))
-          ((RegionRc*)r)->release_internal(alloc, o, sub_regions);
+          return;
         else
           abort();
       }
-    }
-
-    /**
-     * Release and deallocate all objects within the region represented by the
-     * Iso Object `o`.
-     *
-     * Note: this does not release subregions. Use Region::release instead.
-     **/
-    void release_internal(Alloc& alloc, Object* o, ObjectStack& collect)
-    {
-      assert(o->debug_is_iso());
-
-      // Finalize the non-trivial objects
-      for (auto rc : counts)
-      {
-        auto p = (uintptr_t)rc->object;
-        if ((p & FINALISER_MASK) == FINALISER_MASK)
-        {
-          auto untagged = (Object*)((uintptr_t)p & ~FINALISER_MASK);
-          untagged->finalise(o, collect);
-        }
-      }
-
-      // Note: it is safe to iterate the bag to deallocate objects since
-      // the bag only stores a pointer to the objects.
-      for (auto rc : counts)
-      {
-        auto untagged = (Object*)(((uintptr_t)rc->object) & ~FINALISER_MASK);
-        untagged->destructor();
-        untagged->dealloc(alloc);
-      }
-
-      counts.dealloc(alloc);
-      lins_stack.dealloc(alloc);
-      dealloc(alloc);
-    }
-
-  public:
-    template<IteratorType type = AllObjects>
-    class iterator
-    {
-      friend class RegionRc;
-
-      static_assert(
-        type == Trivial || type == NonTrivial || type == AllObjects);
-
-      iterator(RegionRc* r, RefCounts::iterator counts) : reg(r), counts(counts)
-      {
-        counts = r->counts.begin();
-        ptr = (*counts)->object;
-        next();
-      }
-
-      iterator(RegionRc* r, RefCounts::iterator counts, Object* p)
-      : reg(r), counts(counts), ptr(p)
-      {}
-
-    private:
-      RegionRc* reg;
-      RefCounts::iterator counts;
-      Object* ptr;
-
-      void step()
-      {
-        ++counts;
-        ptr = (*counts)->object;
-      }
-
-      void next()
-      {
-        if constexpr (type == AllObjects)
-        {
-          ptr = (*counts)->object;
-          return;
-        }
-        else if constexpr (type == NonTrivial)
-        {
-          while ((counts != counts.end()) && !((uintptr_t)ptr & FINALISER_MASK))
-          {
-            step();
-          }
-          ptr = (*counts)->object;
-          return;
-        }
-        else
-        {
-          while ((counts != counts.end()) && ((uintptr_t)ptr & FINALISER_MASK))
-          {
-            step();
-          }
-          ptr = (*counts)->object;
-          return;
-        }
-      }
-
-    public:
-      iterator operator++()
-      {
-        step();
-        next();
-        return *this;
-      }
-
-      inline bool operator!=(const iterator& other) const
-      {
-        assert(reg == other.reg);
-        return ptr != other.ptr;
-      }
-
-      inline Object* operator*() const
-      {
-        return ptr;
-      }
-    };
-
-    template<IteratorType type = AllObjects>
-    inline iterator<type> begin()
-    {
-      return {this, counts.begin()};
-    }
-
-    template<IteratorType type = AllObjects>
-    inline iterator<type> end()
-    {
-      return {this, counts.end(), nullptr};
     }
 
   private:
@@ -706,13 +580,6 @@ namespace verona::rt
       current_memory_used += size;
     }
 
-    RefCount* track_object(Object* o, Alloc& alloc)
-    {
-      auto tagged = (uintptr_t)o;
-      if (!(o->is_trivial()))
-        tagged |= FINALISER_MASK;
-      return counts.insert({(Object*)tagged, 1}, alloc);
-    }
   };
 
 } // namespace verona::rt

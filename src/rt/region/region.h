@@ -230,12 +230,7 @@ namespace verona::rt
           }
           return count;
         case RegionType::Rc:
-          for (auto p : *((RegionRc*)r))
-          {
-            UNUSED(p);
-            count++;
-          }
-          return count;
+          return ((RegionRc*)r)->region_size;
         default:
           abort();
       }
@@ -330,7 +325,6 @@ namespace verona::rt
           ((RegionArena*)r)->release_internal(alloc, o, collect);
           return;
         case RegionType::Rc:
-          ((RegionRc*)r)->release_internal(alloc, o, collect);
           return;
         default:
           abort();

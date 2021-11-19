@@ -19,16 +19,6 @@ namespace memory_rc
   using Cx = C3<region_type>;
   using Fx = F3<region_type>;
 
-  template<class... T>
-  uintptr_t alloc_garbage_helper(Alloc& alloc, Object* o, uintptr_t count)
-  {
-    alloc_in_region<T...>(alloc, o);
-    auto ds = Region::debug_size(o);
-    uintptr_t new_count = sizeof...(T) + count;
-    check(ds == new_count); // o + T...
-    return new_count;
-  }
-
   /**
    * A few basic tests to start:
    *   - allocating unreachable objects, and then releasing the region to ensure
@@ -38,27 +28,6 @@ namespace memory_rc
    **/
   void test_basic()
   {
-    // Allocate a lot of garbage.
-    {
-      auto& alloc = ThreadAlloc::get();
-      auto* o = new (alloc) C;
-
-      uintptr_t obj_count = 1;
-
-      obj_count =
-        alloc_garbage_helper<C, F, MC, MF, LC, LF, XC, XF>(alloc, o, obj_count);
-      obj_count = alloc_garbage_helper<C, C, C, XF, XF, MC, LC, LF, F, F, XC>(
-        alloc, o, obj_count);
-      obj_count = alloc_garbage_helper<C, C, C, XF, XF, MC, LC, LF, F, F, XC>(
-        alloc, o, obj_count);
-      obj_count = alloc_garbage_helper<XC, XC, XC, XF, MC>(alloc, o, obj_count);
-      obj_count =
-        alloc_garbage_helper<F, F, F, C, C, C, C, F>(alloc, o, obj_count);
-
-      Region::release(alloc, o);
-      snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
-    }
-
     // Allocate a lot of objects that are all connected.
     // Then decref the root and see if children are deallocated.
     {
