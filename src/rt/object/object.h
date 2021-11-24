@@ -504,19 +504,27 @@ namespace verona::rt
       assert(
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
-      return (size_t)(get_header().bits & ~MASK);
+      return (size_t)(get_header().bits >> SHIFT);
     }
 
-    inline void set_ref_count(size_t count)
+    inline void incref_rc_region()
     {
       assert(
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
-      get_header().bits = count | get_class();
+      get_header().bits += ONE_RC;
+    }
+
+    inline void decref_rc_region()
+    {
+      assert(
+        (get_class() == RegionMD::MARKED) ||
+        (get_class() == RegionMD::UNMARKED));
+      get_header().bits -= ONE_RC;
     }
 
     inline void init_ref_count() {
-      get_header().bits = 1 | RegionMD::UNMARKED;
+      get_header().bits = RegionMD::UNMARKED + ONE_RC;
     }
 
     inline void set_next(Object* o)

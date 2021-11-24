@@ -36,7 +36,7 @@ namespace verona::rt
   private:
     static constexpr uintptr_t FINALISER_MASK = 1 << 1;
 
-    size_t entry_point_count = 0;
+    size_t entry_point_count = 1;
 
     // Objects which may be in a cycle, so will be checked by gc_cycles.
     // FIXME: Use two stacks to simulate per-block queue based behaviour.
@@ -156,7 +156,7 @@ namespace verona::rt
         reg->entry_point_count += 1;
         return;
       }
-      o->set_ref_count(o->get_ref_count() + 1);
+      o->incref_rc_region();
 
       // TODO: Currently we don't remove items from the Lins stack because
       // there is no way to find the object in the stack without an O(n) pass.
@@ -248,11 +248,37 @@ namespace verona::rt
       }
     }
 
+    /**
+     * Release and deallocate all objects within the region represented by the
+     * Iso Object `o`.
+     *
+     * Note: this does not release subregions. Use Region::release instead.
+     **/
+    void release_internal(Alloc& alloc, Object* o, ObjectStack& collect) {
+      decref(alloc, o, o);
+
+      UNUSED(collect);
+
+      // Now we need to remove any cyclic garbage left in the region.
+      while(!lins_stack.empty()) {
+        auto p = lins_stack.pop(alloc);
+
+
+
+      }
+    }
+
   private:
     enum FinalisationKind
     {
       Cyclic,
       NonCyclic,
+    };
+
+    enum ReleaseKind
+    {
+      ReleaseSubregions,
+      LeaveSubregions,
     };
 
     /**
@@ -458,7 +484,7 @@ namespace verona::rt
 
     inline static bool decref_inner(Object* o)
     {
-      o->set_ref_count(o->get_ref_count() -1);
+      o->decref_rc_region();
       return (o->get_ref_count() == 0);
     }
 
