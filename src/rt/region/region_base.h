@@ -52,6 +52,7 @@ namespace verona::rt
       RememberedSet::dealloc(alloc);
       Object::dealloc(alloc);
     }
+
   };
 
 } // namespace verona::rt

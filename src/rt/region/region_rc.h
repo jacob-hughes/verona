@@ -138,9 +138,16 @@ namespace verona::rt
     }
 
     static void open(Object* o) {
-      UNUSED(o);
-      // assert(ol->get_class() == RegionMD::ISO);
-      // auto tlalloc = &ThreadAlloc::get();
+      assert(o->get_class() == RegionMD::ISO);
+      RegionRc* reg = get(o);
+      o->init_iso_ref_count(reg->entry_point_count);
+    }
+
+    static void close(Object* o, RegionBase* region) {
+      assert(o->get_class() == RegionMD::ISO);
+      auto r = (RegionRc*) region;
+      r->entry_point_count = o->get_ref_count();
+      o->set_region(region);
     }
 
     /// Increments the reference count of `o`. The object `in` is the entry
@@ -257,14 +264,51 @@ namespace verona::rt
     void release_internal(Alloc& alloc, Object* o, ObjectStack& collect) {
       decref(alloc, o, o);
 
-      UNUSED(collect);
+      LinkedObjectStack gc;
 
       // Now we need to remove any cyclic garbage left in the region.
       while(!lins_stack.empty()) {
-        auto p = lins_stack.pop(alloc);
+        Object* entry = lins_stack.pop(alloc);
 
+        ObjectStack dfs(alloc);
+        entry->trace(dfs);
 
+        while(!dfs.empty()) {
+            Object* p = dfs.pop();
+            switch (p->get_class())
+            {
+                case Object::ISO:
+                    assert(p != o);
+                    collect.push(p);
+                    break;
+                case Object::MARKED:
+                    continue;
+                case Object::UNMARKED:
+                    p->finalise(nullptr, collect);
+                    p->mark();
+                    p->trace(dfs);
+                    gc.push(p);
+                    break;
+                case Object::SCC_PTR:
+                    p->immutable();
+                    p->decref();
+                    break;
+                case Object::RC:
+                    p->decref();
+                    break;
+                case Object::COWN:
+                    p->decref_cown();
+                    break;
+                default:
+                    assert(0);
+            }
+        }
+      }
 
+      while(!gc.empty()) {
+        Object* o = gc.pop();
+        o->destructor();
+        o->dealloc(alloc);
       }
     }
 

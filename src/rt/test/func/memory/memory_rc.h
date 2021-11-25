@@ -42,17 +42,21 @@ namespace memory_rc
       auto* o6 = new (alloc, o) C;
       auto* o7 = new (alloc, o) C;
 
-      // Link them up
-      o1->f1 = o2;
-      o1->f2 = o4;
-      o2->f1 = o3;
-      o2->f2 = o4;
-      RegionRc::incref(o4, o);
+      {
+          UsingRegion rc(o);
 
-      o4->f1 = o5;
-      RegionRc::incref(o5, o);
-      o5->f1 = o6;
-      o5->f2 = o7;
+          // Link them up
+          o1->f1 = o2;
+          o1->f2 = o4;
+          o2->f1 = o3;
+          o2->f2 = o4;
+          RegionRc::incref(o4, o);
+
+          o4->f1 = o5;
+          RegionRc::incref(o5, o);
+          o5->f1 = o6;
+          o5->f2 = o7;
+      }
 
       check(Region::debug_size(o) == 8);
       check(RegionRc::get_ref_count(o1, o) == 1);
@@ -83,6 +87,8 @@ namespace memory_rc
 
       auto* o1 = new (alloc, o) C;
       auto* o2 = new (alloc, o) C;
+
+      RegionRc::open(o);
 
       // Link them up
       o1->f1 = o2;

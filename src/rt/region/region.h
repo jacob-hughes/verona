@@ -331,4 +331,44 @@ namespace verona::rt
       }
     }
   };
+
+
+  inline thread_local RegionBase* ACTIVE_REGION_MD = nullptr;
+
+  struct UsingRegion {
+      UsingRegion(Object* iso) : iso(iso) {
+          RegionBase* r = iso->get_region();
+          ACTIVE_REGION_MD = r;
+          switch (Region::get_type(r)) {
+              case RegionType::Trace:
+              case RegionType::Arena:
+                  break;
+              case RegionType::Rc:
+                  ((RegionRc*)r)->open(iso);
+                  break;
+              default:
+                  abort();
+          }
+      }
+
+      ~UsingRegion() {
+          switch (Region::get_type(ACTIVE_REGION_MD)) {
+              case RegionType::Trace:
+              case RegionType::Arena:
+                  break;
+              case RegionType::Rc:
+                  ((RegionRc*)ACTIVE_REGION_MD)->close(iso, ACTIVE_REGION_MD);
+                  break;
+              default:
+                  abort();
+          }
+          ACTIVE_REGION_MD = nullptr;
+      }
+
+      size_t debug_size() {
+
+      }
+
+      Object* iso;
+  };
 } // namespace verona::rt

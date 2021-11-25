@@ -451,6 +451,7 @@ namespace verona::rt
     friend class ObjectMap;
     friend class Message;
     friend class LocalEpoch;
+    friend struct UsingRegion;
 
     friend class LinkedObjectStack;
 
@@ -502,6 +503,7 @@ namespace verona::rt
     inline size_t get_ref_count()
     {
       assert(
+        (get_class() == RegionMD::ISO) ||
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
       return (size_t)(get_header().bits >> SHIFT);
@@ -525,6 +527,11 @@ namespace verona::rt
 
     inline void init_ref_count() {
       get_header().bits = RegionMD::UNMARKED + ONE_RC;
+    }
+
+    inline void init_iso_ref_count(size_t count) {
+      assert(get_class() == RegionMD::ISO);
+      get_header().bits = (count << SHIFT) | (uint8_t) RegionMD::ISO;
     }
 
     inline void set_next(Object* o)
