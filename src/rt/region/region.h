@@ -325,6 +325,7 @@ namespace verona::rt
           ((RegionArena*)r)->release_internal(alloc, o, collect);
           return;
         case RegionType::Rc:
+          ((RegionRc*)r)->release_internal(alloc, o, collect);
           return;
         default:
           abort();
@@ -332,14 +333,21 @@ namespace verona::rt
     }
   };
 
-
   inline thread_local RegionBase* ACTIVE_REGION_MD = nullptr;
+
+  inline static RegionBase* opened_region() {
+    return ACTIVE_REGION_MD;
+  }
 
   struct UsingRegion {
       UsingRegion(Object* iso) : iso(iso) {
           RegionBase* r = iso->get_region();
           ACTIVE_REGION_MD = r;
-          switch (Region::get_type(r)) {
+          // We store the type here because get_type can't be called on an opened region
+          // since we modify the ISO header.
+          type = Region::get_type(r);
+
+          switch (type) {
               case RegionType::Trace:
               case RegionType::Arena:
                   break;
@@ -352,7 +360,7 @@ namespace verona::rt
       }
 
       ~UsingRegion() {
-          switch (Region::get_type(ACTIVE_REGION_MD)) {
+          switch (type) {
               case RegionType::Trace:
               case RegionType::Arena:
                   break;
@@ -366,9 +374,17 @@ namespace verona::rt
       }
 
       size_t debug_size() {
+        assert(type == RegionType::Rc);
+        return ((RegionRc*)ACTIVE_REGION_MD)->region_size;
 
       }
 
+      size_t debug_get_ref_count(Object* o) {
+        assert(type == RegionType::Rc);
+        return o->get_ref_count();
+      }
+
       Object* iso;
+      RegionType type;
   };
 } // namespace verona::rt

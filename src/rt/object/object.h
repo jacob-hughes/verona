@@ -37,6 +37,7 @@ namespace verona::rt
    *  SCC_PTR  |  Union-find parent pointer for SCC           | Immutable object
    *  Pending  |  Depth of longest chain in SCC               | Immutable object
    *  Cown     |  Reference count                             | Cown object
+   *  Open ISO |  Region specific scratch space               | Root of region
    *
    *
    * *Pending* is used during operations to construct an SCC.
@@ -520,6 +521,7 @@ namespace verona::rt
     inline void decref_rc_region()
     {
       assert(
+        (get_class() == RegionMD::ISO) ||
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
       get_header().bits -= ONE_RC;

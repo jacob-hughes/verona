@@ -11,6 +11,8 @@ namespace verona::rt
 {
   using namespace snmalloc;
 
+  inline static RegionBase* opened_region();
+
   /**
    * Please see region.h for the full documentation.
    *
@@ -32,6 +34,7 @@ namespace verona::rt
     friend class Freeze;
     friend class Region;
     friend class RegionTrace;
+    friend struct UsingRegion;
 
   private:
     static constexpr uintptr_t FINALISER_MASK = 1 << 1;
@@ -152,17 +155,8 @@ namespace verona::rt
 
     /// Increments the reference count of `o`. The object `in` is the entry
     /// point to the region that contains `o`.
-    static void incref(Object* o, Object* in)
+    static void incref(Object* o)
     {
-      // FIXME: An extra branch is needed here because the first field in the
-      // RegionMD of an ISO holds a pointer to the region description, so we
-      // can't quickly access the refcount as we would an ordinary object.
-      if (o == in)
-      {
-        RegionRc* reg = get(in);
-        reg->entry_point_count += 1;
-        return;
-      }
       o->incref_rc_region();
 
       // TODO: Currently we don't remove items from the Lins stack because
@@ -175,12 +169,7 @@ namespace verona::rt
     /// object with only one reference, then the object will be deallocated.
     static bool decref(Alloc& alloc, Object* o, Object* in)
     {
-      if (o == in)
-      {
-        RegionRc* reg = get(in);
-        reg->entry_point_count -= 1;
-      }
-      else if (decref_inner(o))
+      if (decref_inner(o))
       {
         dealloc_object(alloc, o, in);
         return true;
@@ -189,7 +178,7 @@ namespace verona::rt
       if (o->get_rc_colour() != RcColour::BLACK)
       {
         o->set_rc_colour(RcColour::BLACK);
-        RegionRc* reg = get(in);
+        RegionRc* reg = (RegionRc*) opened_region();
         reg->lins_stack.push(o, alloc);
       }
       return false;
@@ -455,7 +444,7 @@ namespace verona::rt
           continue;
         }
 
-        incref(f, in);
+        incref(f);
         if (f->is_rc_candidate() && f->get_rc_colour() != RcColour::GREEN)
         {
           f->set_rc_colour(RcColour::GREEN);
@@ -541,7 +530,7 @@ namespace verona::rt
       o->trace(dfs);
       ObjectStack fin_q(alloc);
 
-      RegionRc* reg = get(in);
+      RegionRc* reg = (RegionRc*) opened_region();
 
       fin_q.push(o);
 

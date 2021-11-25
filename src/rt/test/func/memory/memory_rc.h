@@ -50,28 +50,28 @@ namespace memory_rc
           o1->f2 = o4;
           o2->f1 = o3;
           o2->f2 = o4;
-          RegionRc::incref(o4, o);
+          RegionRc::incref(o4);
 
           o4->f1 = o5;
-          RegionRc::incref(o5, o);
+          RegionRc::incref(o5);
           o5->f1 = o6;
           o5->f2 = o7;
+
+          check(rc.debug_size() == 8);
+          check(rc.debug_get_ref_count(o1) == 1);
+          check(rc.debug_get_ref_count(o2) == 1);
+          check(rc.debug_get_ref_count(o3) == 1);
+          check(rc.debug_get_ref_count(o4) == 2);
+          check(rc.debug_get_ref_count(o5) == 2);
+          check(rc.debug_get_ref_count(o6) == 1);
+          check(rc.debug_get_ref_count(o7) == 1);
+
+          // Decref'ing o1 to 0 should trigger a deallocation.
+          RegionRc::decref(alloc, o1, o);
+
+          check(rc.debug_size() == 4);
+
       }
-
-      check(Region::debug_size(o) == 8);
-      check(RegionRc::get_ref_count(o1, o) == 1);
-      check(RegionRc::get_ref_count(o2, o) == 1);
-      check(RegionRc::get_ref_count(o3, o) == 1);
-      check(RegionRc::get_ref_count(o4, o) == 2);
-      check(RegionRc::get_ref_count(o5, o) == 2);
-      check(RegionRc::get_ref_count(o6, o) == 1);
-      check(RegionRc::get_ref_count(o7, o) == 1);
-
-      // Decref'ing o1 to 0 should trigger a deallocation.
-      RegionRc::decref(alloc, o1, o);
-
-      check(Region::debug_size(o) == 4);
-
       Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
@@ -88,26 +88,28 @@ namespace memory_rc
       auto* o1 = new (alloc, o) C;
       auto* o2 = new (alloc, o) C;
 
-      RegionRc::open(o);
+      {
+          UsingRegion rc(o);
 
-      // Link them up
-      o1->f1 = o2;
-      o1->f2 = o;
-      RegionRc::incref(o, o);
-      o2->f1 = sub1;
-      o2->f2 = sub2;
+        // Link them up
+        o1->f1 = o2;
+        o1->f2 = o;
+        RegionRc::incref(o);
+        o2->f1 = sub1;
+        o2->f2 = sub2;
 
-      check(Region::debug_size(o) == 3);
-      check(RegionRc::get_ref_count(o, o) == 2);
-      check(RegionRc::get_ref_count(o1, o) == 1);
-      check(RegionRc::get_ref_count(o2, o) == 1);
+        check(rc.debug_size() == 3);
+        check(rc.debug_get_ref_count(o) == 2);
+        check(rc.debug_get_ref_count(o1) == 1);
+        check(rc.debug_get_ref_count(o2) == 1);
 
-      RegionRc::decref(alloc, o1, o);
+        RegionRc::decref(alloc, o1, o);
 
-      check(RegionRc::get_ref_count(o, o) == 1);
+        check(rc.debug_get_ref_count(o) == 1);
 
-      check(Region::debug_size(o) == 1);
+        check(rc.debug_size() == 1);
 
+      }
       Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
@@ -131,26 +133,30 @@ namespace memory_rc
       auto* o5 = new (alloc, o) C;
       auto* o6 = new (alloc, o) C;
 
-      // cycle: o6 -> (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
-      o1->f1 = o2;
-      o2->f1 = o3;
-      o3->f1 = o4;
-      o4->f1 = o5;
-      o5->f1 = o1;
+      {
+          UsingRegion rc(o);
 
-      RegionRc::incref(o1, o);
-      o6->f1 = o1;
+          // cycle: o6 -> (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
+          o1->f1 = o2;
+          o2->f1 = o3;
+          o3->f1 = o4;
+          o4->f1 = o5;
+          o5->f1 = o1;
 
-      check(Region::debug_size(o) == 7);
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 7);
+          RegionRc::incref(o1);
+          o6->f1 = o1;
 
-      o6->f1 = nullptr;
-      RegionRc::decref(alloc, o1, o);
+          check(rc.debug_size() == 7);
+          RegionRc::gc_cycles(alloc, o);
+          check(rc.debug_size() == 7);
 
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 2);
+          o6->f1 = nullptr;
+          RegionRc::decref(alloc, o1, o);
 
+          RegionRc::gc_cycles(alloc, o);
+          check(rc.debug_size() == 2);
+
+      }
       Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
@@ -168,38 +174,42 @@ namespace memory_rc
       auto* o5 = new (alloc, o) C;
       auto* o6 = new (alloc, o) C;
 
-      // cycle: (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
-      //                     ^
-      //                     o6
-      o1->f1 = o2;
-      o2->f1 = o3;
-      o3->f1 = o4;
-      o4->f1 = o5;
-      o5->f1 = o1;
+      {
+          UsingRegion rc(o);
 
-      RegionRc::incref(o1, o);
-      o6->f1 = o3;
-      RegionRc::incref(o3, o);
+          // cycle: (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
+          //                     ^
+          //                     o6
+          o1->f1 = o2;
+          o2->f1 = o3;
+          o3->f1 = o4;
+          o4->f1 = o5;
+          o5->f1 = o1;
 
-      check(Region::debug_size(o) == 7);
+          RegionRc::incref(o1);
+          o6->f1 = o3;
+          RegionRc::incref(o3);
 
-      RegionRc::decref(alloc, o1, o);
+          check(rc.debug_size() == 7);
 
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 7);
+          RegionRc::decref(alloc, o1, o);
 
-      // Now add a reference from o1->o6 and try and reclaim the cycle again.
-      // cycle: (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
-      //          |                 ^
-      //          +---------------> o6
-      o1->f2 = o6;
+          RegionRc::gc_cycles(alloc, o);
+          check(rc.debug_size() == 7);
 
-      // Retrigger adding o1 to the lins stack.
-      RegionRc::incref(o1, o);
-      RegionRc::decref(alloc, o1, o);
+          // Now add a reference from o1->o6 and try and reclaim the cycle again.
+          // cycle: (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
+          //          |                 ^
+          //          +---------------> o6
+          o1->f2 = o6;
 
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 1);
+          // Retrigger adding o1 to the lins stack.
+          RegionRc::incref(o1);
+          RegionRc::decref(alloc, o1, o);
+
+          RegionRc::gc_cycles(alloc, o);
+          check(rc.debug_size() == 1);
+      }
 
       Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
@@ -220,22 +230,26 @@ namespace memory_rc
       auto* p1 = new (alloc, p) C;
       auto* p2 = new (alloc, p) C;
 
-      p->f1 = p1;
-      p1->f1 = p2;
+      {
+          UsingRegion rc(o);
 
-      o1->f1 = o2;
-      o2->f1 = o3;
-      o2->f2 = p;
-      o3->f1 = o1;
+          p->f1 = p1;
+          p1->f1 = p2;
 
-      RegionRc::incref(o1, o);
-      RegionRc::decref(alloc, o1, o);
+          o1->f1 = o2;
+          o2->f1 = o3;
+          o2->f2 = p;
+          o3->f1 = o1;
 
-      check(Region::debug_size(o) == 4);
-      check(Region::debug_size(p) == 3);
+          RegionRc::incref(o1);
+          RegionRc::decref(alloc, o1, o);
 
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 1);
+          check(rc.debug_size() == 4);
+          check(rc.debug_size() == 3);
+
+          RegionRc::gc_cycles(alloc, o);
+          check(rc.debug_size() == 1);
+      }
       Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
@@ -255,13 +269,13 @@ namespace memory_rc
       o1->f1 = o2;
       o2->f1 = o;
 
-      RegionRc::incref(o, o);
+      RegionRc::incref(o);
 
       check(Region::debug_size(o) == 3);
       RegionRc::gc_cycles(alloc, o);
       check(Region::debug_size(o) == 3);
 
-      RegionRc::incref(o, o);
+      RegionRc::incref(o);
       RegionRc::decref(alloc, o, o);
 
       RegionRc::gc_cycles(alloc, o);
