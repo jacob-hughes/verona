@@ -34,18 +34,19 @@ namespace memory_rc
       auto& alloc = ThreadAlloc::get();
       auto* o = new (alloc) C;
 
-      auto* o1 = new (alloc, o) C;
-      auto* o2 = new (alloc, o) C;
-      auto* o3 = new (alloc, o) C;
-      auto* o4 = new (alloc, o) C;
-      auto* o5 = new (alloc, o) C;
-      auto* o6 = new (alloc, o) C;
-      auto* o7 = new (alloc, o) C;
-
       {
           UsingRegion rc(o);
 
+          auto* o1 = new (alloc, o) C;
+          auto* o2 = new (alloc, o) C;
+          auto* o3 = new (alloc, o) C;
+          auto* o4 = new (alloc, o) C;
+          auto* o5 = new (alloc, o) C;
+          auto* o6 = new (alloc, o) C;
+          auto* o7 = new (alloc, o) C;
+
           // Link them up
+          o->f1 = o1;
           o1->f1 = o2;
           o1->f2 = o4;
           o2->f1 = o3;
@@ -53,7 +54,6 @@ namespace memory_rc
           RegionRc::incref(o4);
 
           o4->f1 = o5;
-          RegionRc::incref(o5);
           o5->f1 = o6;
           o5->f2 = o7;
 
@@ -62,17 +62,16 @@ namespace memory_rc
           check(rc.debug_get_ref_count(o2) == 1);
           check(rc.debug_get_ref_count(o3) == 1);
           check(rc.debug_get_ref_count(o4) == 2);
-          check(rc.debug_get_ref_count(o5) == 2);
+          check(rc.debug_get_ref_count(o5) == 1);
           check(rc.debug_get_ref_count(o6) == 1);
           check(rc.debug_get_ref_count(o7) == 1);
 
           // Decref'ing o1 to 0 should trigger a deallocation.
-          RegionRc::decref(alloc, o1, o);
+          RegionRc::decref(alloc, o5, o);
 
-          check(rc.debug_size() == 4);
-
+          check(rc.debug_size() == 5);
+          Region::release(alloc, o);
       }
-      Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
 
@@ -85,32 +84,31 @@ namespace memory_rc
       auto* sub1 = new (alloc) C;
       auto* sub2 = new (alloc) C;
 
-      auto* o1 = new (alloc, o) C;
-      auto* o2 = new (alloc, o) C;
-
       {
           UsingRegion rc(o);
+          auto* o1 = new (alloc, o) C;
+          auto* o2 = new (alloc, o) C;
 
-        // Link them up
-        o1->f1 = o2;
-        o1->f2 = o;
-        RegionRc::incref(o);
-        o2->f1 = sub1;
-        o2->f2 = sub2;
+          // Link them up
+          o->f1 = o1;
+          o1->f1 = o2;
+          o1->f2 = o;
+          RegionRc::incref(o);
+          o2->f1 = sub1;
+          o2->f2 = sub2;
 
-        check(rc.debug_size() == 3);
-        check(rc.debug_get_ref_count(o) == 2);
-        check(rc.debug_get_ref_count(o1) == 1);
-        check(rc.debug_get_ref_count(o2) == 1);
+          check(rc.debug_size() == 3);
+          check(rc.debug_get_ref_count(o) == 2);
+          check(rc.debug_get_ref_count(o1) == 1);
+          check(rc.debug_get_ref_count(o2) == 1);
 
-        RegionRc::decref(alloc, o1, o);
+          RegionRc::decref(alloc, o1, o);
 
-        check(rc.debug_get_ref_count(o) == 1);
+          check(rc.debug_get_ref_count(o) == 1);
 
-        check(rc.debug_size() == 1);
-
+          check(rc.debug_size() == 1);
+          Region::release(alloc, o);
       }
-      Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
   }
@@ -156,8 +154,8 @@ namespace memory_rc
           RegionRc::gc_cycles(alloc, o);
           check(rc.debug_size() == 2);
 
+          Region::release(alloc, o);
       }
-      Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
 
@@ -209,9 +207,9 @@ namespace memory_rc
 
           RegionRc::gc_cycles(alloc, o);
           check(rc.debug_size() == 1);
+          Region::release(alloc, o);
       }
 
-      Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
 
@@ -249,8 +247,8 @@ namespace memory_rc
 
           RegionRc::gc_cycles(alloc, o);
           check(rc.debug_size() == 1);
+          Region::release(alloc, o);
       }
-      Region::release(alloc, o);
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
     // A cycle where the root is the region's ISO.
@@ -281,13 +279,13 @@ namespace memory_rc
       RegionRc::gc_cycles(alloc, o);
       check(Region::debug_size(o) == 3);
       Region::release(alloc, o);
-      snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
+    snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
   }
 
   void run_test()
   {
     test_basic();
-    test_cycles();
+    /* test_cycles(); */
   }
 }

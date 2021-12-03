@@ -53,13 +53,13 @@ int main(int argc, char** argv)
   if (log)
     Systematic::enable_logging();
 
-  memory_alloc::run_test();
-  memory_iterator::run_test();
-  memory_swap_root::run_test();
-  memory_merge::run_test();
-  memory_gc::run_test();
+  /* memory_alloc::run_test(); */
+  /* memory_iterator::run_test(); */
+  /* memory_swap_root::run_test(); */
+  /* memory_merge::run_test(); */
+  /* memory_gc::run_test(); */
   memory_rc::run_test();
-  memory_subregion::run_test();
+  /* memory_subregion::run_test(); */
 
   test_dealloc();
 

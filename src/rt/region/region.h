@@ -10,6 +10,8 @@
 
 namespace verona::rt
 {
+  inline thread_local RegionBase* ACTIVE_REGION_MD = nullptr;
+
   /**
    * Conceptually, objects are allocated within a region, and regions are
    * owned by cowns. Different regions may have different memory management
@@ -177,7 +179,7 @@ namespace verona::rt
      **/
     static void release(Alloc& alloc, Object* o)
     {
-      assert(o->debug_is_iso());
+      assert(o->debug_is_iso() || o->is_opened());
       ObjectStack collect(alloc);
       Region::release_internal(alloc, o, collect);
 
@@ -314,8 +316,12 @@ namespace verona::rt
      **/
     static void release_internal(Alloc& alloc, Object* o, ObjectStack& collect)
     {
-      assert(o->debug_is_iso());
-      RegionBase* r = o->get_region();
+      RegionBase* r = nullptr;
+      if (o->is_opened()) {
+          r = ACTIVE_REGION_MD;
+      } else {
+          r = o->get_region();
+      }
       switch (Region::get_type(r))
       {
         case RegionType::Trace:
@@ -333,10 +339,16 @@ namespace verona::rt
     }
   };
 
-  inline thread_local RegionBase* ACTIVE_REGION_MD = nullptr;
-
   inline static RegionBase* opened_region() {
     return ACTIVE_REGION_MD;
+  }
+
+  inline static void clear_opened_region() {
+    ACTIVE_REGION_MD = nullptr;
+  }
+
+  inline static void set_opened_region(RegionBase* reg) {
+    ACTIVE_REGION_MD = reg;
   }
 
   struct UsingRegion {
@@ -360,6 +372,10 @@ namespace verona::rt
       }
 
       ~UsingRegion() {
+          if(!ACTIVE_REGION_MD) {
+              // The region closed itself (i.e. release was called)
+              return;
+          }
           switch (type) {
               case RegionType::Trace:
               case RegionType::Arena:
@@ -370,7 +386,7 @@ namespace verona::rt
               default:
                   abort();
           }
-          ACTIVE_REGION_MD = nullptr;
+          clear_opened_region();
       }
 
       size_t debug_size() {

@@ -12,6 +12,8 @@ namespace verona::rt
   using namespace snmalloc;
 
   inline static RegionBase* opened_region();
+  inline static void set_opened_region(RegionBase* reg);
+  inline static void clear_opened_region();
 
   /**
    * Please see region.h for the full documentation.
@@ -119,7 +121,8 @@ namespace verona::rt
     static Object* alloc(Alloc& alloc, Object* in, const Descriptor* desc)
     {
       assert((size == 0) || (size == desc->size));
-      RegionRc* reg = get(in);
+      assert(in->get_class() == RegionMD::OPEN_ISO);
+      RegionRc* reg = (RegionRc*)opened_region();
 
       assert(reg != nullptr);
 
@@ -147,10 +150,11 @@ namespace verona::rt
     }
 
     static void close(Object* o, RegionBase* region) {
-      assert(o->get_class() == RegionMD::ISO);
+      assert(o->get_class() == RegionMD::OPEN_ISO);
       auto r = (RegionRc*) region;
       r->entry_point_count = o->get_ref_count();
       o->set_region(region);
+      clear_opened_region();
     }
 
     /// Increments the reference count of `o`. The object `in` is the entry
@@ -251,9 +255,80 @@ namespace verona::rt
      * Note: this does not release subregions. Use Region::release instead.
      **/
     void release_internal(Alloc& alloc, Object* o, ObjectStack& collect) {
-      decref(alloc, o, o);
 
+      assert(o->get_class() == RegionMD::OPEN_ISO);
+      if (!decref_inner(o)) {
+          abort();
+      }
+
+      ObjectStack dfs(alloc);
+      o->trace(dfs);
+      ObjectStack fin_q(alloc);
+
+      while(!dfs.empty()) {
+        Object* f = dfs.pop();
+        switch (f->get_class())
+        {
+          case Object::OPEN_ISO:
+              assert(0);
+          case Object::MARKED:
+          case Object::UNMARKED:
+              //FIXME: we need to ensure decrefing removes from the lins q
+            if (decref_inner(f))
+            {
+              fin_q.push(f);
+              f->trace(dfs);
+            }
+            break;
+          case Object::SCC_PTR:
+            f->immutable();
+            f->decref();
+            break;
+          case Object::RC:
+            f->decref();
+            break;
+          case Object::COWN:
+            f->decref_cown();
+            break;
+          case Object::ISO:
+            assert(f != o);
+            collect.push(f);
+            break;
+          default:
+            assert(0);
+        }
+      }
+
+      dealloc_objects<FinalisationKind::NonCyclic>(alloc, fin_q, collect);
+
+      // Clean up any cyclic garbage not reachable from the entry point.
+      release_cycles(alloc);
+
+      // finally, close the region and destroy the ISO object.
+      RegionRc::close(o, this);
+      ObjectStack isos(alloc);
+      o->finalise(nullptr, isos);
+      o->destructor();
+      o->dealloc(alloc);
+      dealloc(alloc);
+    }
+
+  private:
+    enum FinalisationKind
+    {
+      Cyclic,
+      NonCyclic,
+    };
+
+    enum ReleaseKind
+    {
+      ReleaseSubregions,
+      LeaveSubregions,
+    };
+
+    void release_cycles(Alloc& alloc) {
       LinkedObjectStack gc;
+      ObjectStack collect(alloc);
 
       // Now we need to remove any cyclic garbage left in the region.
       while(!lins_stack.empty()) {
@@ -266,12 +341,13 @@ namespace verona::rt
             Object* p = dfs.pop();
             switch (p->get_class())
             {
-                case Object::ISO:
-                    assert(p != o);
-                    collect.push(p);
+                case Object::OPEN_ISO:
+                    // If we got here, something is very wrong, since we already
+                    // deallocated anything reachable from the ISO.
+                    assert(0);
                     break;
                 case Object::MARKED:
-                    continue;
+                    break;
                 case Object::UNMARKED:
                     p->finalise(nullptr, collect);
                     p->mark();
@@ -299,20 +375,8 @@ namespace verona::rt
         o->destructor();
         o->dealloc(alloc);
       }
+
     }
-
-  private:
-    enum FinalisationKind
-    {
-      Cyclic,
-      NonCyclic,
-    };
-
-    enum ReleaseKind
-    {
-      ReleaseSubregions,
-      LeaveSubregions,
-    };
 
     /**
      * Mark an object as red (i.e. dead). This is recursive over o's fields
@@ -479,10 +543,9 @@ namespace verona::rt
         Object* f = dfs.pop();
         switch (f->get_class())
         {
-          case Object::ISO:
+          case Object::OPEN_ISO:
             // There should always be an external reference to the region's ISO.
-            assert(f != in);
-            sub_regions.push(f);
+            assert(0);
             break;
           case Object::MARKED:
             break;
@@ -507,6 +570,9 @@ namespace verona::rt
           case Object::COWN:
             f->decref_cown();
             break;
+          case Object::ISO:
+            // Deallocation should only happen on an opened region.
+            sub_regions.push(f);
           default:
             assert(0);
         }
@@ -539,16 +605,16 @@ namespace verona::rt
         Object* p = dfs.pop();
         switch (p->get_class())
         {
-          case Object::ISO:
-            if (p == in)
-            {
-              reg->entry_point_count -= 1;
-            }
-            else
-            {
-              sub_regions.push(p);
-            }
-            break;
+          case Object::OPEN_ISO:
+              if (decref_inner(p)) {
+                  // We have to halt the deallocation and instead start a full
+                  // release of the region so that floating garbage is accounted
+                  // for. This will undo work from the current trace.
+                  ObjectStack collect(alloc);
+                  reg->release_internal(alloc, p, collect);
+                  return;
+              }
+              break;
           case Object::MARKED:
           case Object::UNMARKED:
             if (decref_inner(p))
@@ -566,6 +632,10 @@ namespace verona::rt
             break;
           case Object::COWN:
             p->decref_cown();
+            break;
+          case Object::ISO:
+            assert(p != in);
+            sub_regions.push(p);
             break;
           default:
             assert(0);
@@ -617,8 +687,14 @@ namespace verona::rt
 
         // Note that we need to dispatch because `r` is a different region
         // metadata object.
+        //
+        // We need to open the sub_region in order to mutate it. This means
+        // storing the current region metadata here before diving in.
         RegionBase* r = o->get_region();
         assert(r != this);
+        RegionBase* current = opened_region();
+        RegionRc::open(o);
+        set_opened_region(r);
 
         // Unfortunately, we can't use Region::release_internal because of a
         // circular dependency between header files.
@@ -627,9 +703,10 @@ namespace verona::rt
         else if (RegionArena::is_arena_region(r))
           ((RegionArena*)r)->release_internal(alloc, o, sub_regions);
         else if (RegionRc::is_rc_region(r))
-          return;
+          ((RegionRc*)r)->release_internal(alloc, o, sub_regions);
         else
           abort();
+      set_opened_region(current);
       }
     }
 

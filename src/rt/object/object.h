@@ -178,7 +178,8 @@ namespace verona::rt
       ISO = 0x4,
       PENDING = 0x5,
       NONATOMIC_RC = 0x6,
-      COWN = 0x7
+      COWN = 0x7,
+      OPEN_ISO = 0x8
     };
 
     inline friend std::ostream& operator<<(std::ostream& os, RegionMD md)
@@ -504,7 +505,7 @@ namespace verona::rt
     inline size_t get_ref_count()
     {
       assert(
-        (get_class() == RegionMD::ISO) ||
+        (get_class() == RegionMD::OPEN_ISO) ||
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
       return (size_t)(get_header().bits >> SHIFT);
@@ -513,6 +514,7 @@ namespace verona::rt
     inline void incref_rc_region()
     {
       assert(
+        (get_class() == RegionMD::OPEN_ISO) ||
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
       get_header().bits += ONE_RC;
@@ -521,7 +523,7 @@ namespace verona::rt
     inline void decref_rc_region()
     {
       assert(
-        (get_class() == RegionMD::ISO) ||
+        (get_class() == RegionMD::OPEN_ISO) ||
         (get_class() == RegionMD::MARKED) ||
         (get_class() == RegionMD::UNMARKED));
       get_header().bits -= ONE_RC;
@@ -533,7 +535,7 @@ namespace verona::rt
 
     inline void init_iso_ref_count(size_t count) {
       assert(get_class() == RegionMD::ISO);
-      get_header().bits = (count << SHIFT) | (uint8_t) RegionMD::ISO;
+      get_header().bits = (count << SHIFT) | (uint8_t) RegionMD::OPEN_ISO;
     }
 
     inline void set_next(Object* o)
@@ -550,7 +552,7 @@ namespace verona::rt
 
     inline void set_region(RegionBase* region)
     {
-      assert(get_class() == RegionMD::ISO);
+      assert(get_class() == RegionMD::ISO || get_class() == RegionMD::OPEN_ISO);
       get_header().bits = (size_t)region | (uint8_t)RegionMD::ISO;
     }
 
@@ -668,6 +670,11 @@ namespace verona::rt
     {
       assert(get_class() == RegionMD::MARKED);
       get_header().bits &= ~(size_t)RegionMD::MARKED;
+    }
+
+    inline bool is_opened()
+    {
+      return get_class() == RegionMD::OPEN_ISO;
     }
 
   public:
