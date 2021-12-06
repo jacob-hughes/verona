@@ -19,6 +19,12 @@ namespace memory_rc
   using Cx = C3<region_type>;
   using Fx = F3<region_type>;
 
+
+  void push_lins_stack(Alloc& alloc, Object* o, Object* in) {
+          RegionRc::incref(o);
+          RegionRc::decref(alloc, o, in);
+  }
+
   /**
    * A few basic tests to start:
    *   - allocating unreachable objects, and then releasing the region to ensure
@@ -66,7 +72,8 @@ namespace memory_rc
           check(rc.debug_get_ref_count(o6) == 1);
           check(rc.debug_get_ref_count(o7) == 1);
 
-          // Decref'ing o1 to 0 should trigger a deallocation.
+          // Decref'ing o5 to 0 should trigger a deallocation.
+          o4->f1 = nullptr;
           RegionRc::decref(alloc, o5, o);
 
           check(rc.debug_size() == 5);
@@ -102,6 +109,7 @@ namespace memory_rc
           check(rc.debug_get_ref_count(o1) == 1);
           check(rc.debug_get_ref_count(o2) == 1);
 
+          o->f1 = nullptr;
           RegionRc::decref(alloc, o1, o);
 
           check(rc.debug_get_ref_count(o) == 1);
@@ -123,16 +131,16 @@ namespace memory_rc
       auto& alloc = ThreadAlloc::get();
       auto* o = new (alloc) C;
 
-      // Allocate some reachable objects.
-      auto* o1 = new (alloc, o) C;
-      auto* o2 = new (alloc, o) C;
-      auto* o3 = new (alloc, o) C;
-      auto* o4 = new (alloc, o) C;
-      auto* o5 = new (alloc, o) C;
-      auto* o6 = new (alloc, o) C;
-
       {
           UsingRegion rc(o);
+
+          // Allocate some reachable objects.
+          auto* o1 = new (alloc, o) C;
+          auto* o2 = new (alloc, o) C;
+          auto* o3 = new (alloc, o) C;
+          auto* o4 = new (alloc, o) C;
+          auto* o5 = new (alloc, o) C;
+          auto* o6 = new (alloc, o) C;
 
           // cycle: o6 -> (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
           o1->f1 = o2;
@@ -154,6 +162,8 @@ namespace memory_rc
           RegionRc::gc_cycles(alloc, o);
           check(rc.debug_size() == 2);
 
+          // Re-link the object graph so that release doesn't leave anything.
+          o->f1 = o6;
           Region::release(alloc, o);
       }
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
@@ -164,16 +174,16 @@ namespace memory_rc
       auto& alloc = ThreadAlloc::get();
       auto* o = new (alloc) C;
 
-      // Allocate some reachable objects.
-      auto* o1 = new (alloc, o) C;
-      auto* o2 = new (alloc, o) C;
-      auto* o3 = new (alloc, o) C;
-      auto* o4 = new (alloc, o) C;
-      auto* o5 = new (alloc, o) C;
-      auto* o6 = new (alloc, o) C;
-
       {
           UsingRegion rc(o);
+
+          // Allocate some reachable objects.
+          auto* o1 = new (alloc, o) C;
+          auto* o2 = new (alloc, o) C;
+          auto* o3 = new (alloc, o) C;
+          auto* o4 = new (alloc, o) C;
+          auto* o5 = new (alloc, o) C;
+          auto* o6 = new (alloc, o) C;
 
           // cycle: (o1 -> o2 -> o3 -> o4 -> o5 -> o1)
           //                     ^
@@ -218,21 +228,25 @@ namespace memory_rc
       auto& alloc = ThreadAlloc::get();
       auto* o = new (alloc) C;
 
-      // Allocate some reachable objects.
-      auto* o1 = new (alloc, o) C;
-      auto* o2 = new (alloc, o) C;
-      auto* o3 = new (alloc, o) C;
-
       // New subregion
       auto* p = new (alloc) C;
-      auto* p1 = new (alloc, p) C;
-      auto* p2 = new (alloc, p) C;
+      {
+          UsingRegion rc(p);
+          auto* p1 = new (alloc, p) C;
+          auto* p2 = new (alloc, p) C;
+
+          p->f1 = p1;
+          p1->f1 = p2;
+      }
 
       {
           UsingRegion rc(o);
 
-          p->f1 = p1;
-          p1->f1 = p2;
+          // Allocate some reachable objects.
+          auto* o1 = new (alloc, o) C;
+          auto* o2 = new (alloc, o) C;
+          auto* o3 = new (alloc, o) C;
+
 
           o1->f1 = o2;
           o2->f1 = o3;
@@ -243,7 +257,6 @@ namespace memory_rc
           RegionRc::decref(alloc, o1, o);
 
           check(rc.debug_size() == 4);
-          check(rc.debug_size() == 3);
 
           RegionRc::gc_cycles(alloc, o);
           check(rc.debug_size() == 1);
@@ -251,34 +264,39 @@ namespace memory_rc
       }
       snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     }
+
     // A cycle where the root is the region's ISO.
     // This should tease out any bugs for special casing that is needed for
     // entry point objects.
     {
       auto& alloc = ThreadAlloc::get();
       auto* o = new (alloc) C;
+      {
+          UsingRegion rc(o);
 
-      // Allocate some reachable objects.
-      auto* o1 = new (alloc, o) C;
-      auto* o2 = new (alloc, o) C;
+          // Allocate some reachable objects.
+          auto* o1 = new (alloc, o) C;
+          auto* o2 = new (alloc, o) C;
 
-      // cycle: (o -> o1 -> o2 -> o)
-      o->f1 = o1;
-      o1->f1 = o2;
-      o2->f1 = o;
+          // cycle: (o -> o1 -> o2 -> o)
+          o->f1 = o1;
+          o1->f1 = o2;
+          o2->f1 = o;
+          RegionRc::incref(o);
 
-      RegionRc::incref(o);
+          /* push_lins_stack(alloc, o, o); */
 
-      check(Region::debug_size(o) == 3);
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 3);
+          /* check(rc.debug_size() == 3); */
+          /* RegionRc::gc_cycles(alloc, o); */
+          /* check(rc.debug_size() == 3); */
 
-      RegionRc::incref(o);
-      RegionRc::decref(alloc, o, o);
+          o2->f1 = o1;
+          RegionRc::decref(alloc, o, o);
+          RegionRc::incref(o1);
 
-      RegionRc::gc_cycles(alloc, o);
-      check(Region::debug_size(o) == 3);
-      Region::release(alloc, o);
+          push_lins_stack(alloc, o1, o);
+          Region::release(alloc, o);
+      }
     }
     snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
   }
@@ -286,6 +304,6 @@ namespace memory_rc
   void run_test()
   {
     test_basic();
-    /* test_cycles(); */
+    test_cycles();
   }
 }

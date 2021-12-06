@@ -67,6 +67,59 @@ namespace memory_subregion
 
     auto& alloc = ThreadAlloc::get();
 
+    if constexpr (region_type == RegionType::Rc) {
+        // Start with a single region.
+        auto* r = new (alloc) F;
+        {
+            UsingRegion rc(r);
+            r->c1 = new (alloc, r) C;
+            r->f1 = new (alloc, r) F;
+            r->c2 = new (alloc, r) C;
+            r->c1->c1 = new (alloc, r) C;
+            r->c1->f1 = new (alloc, r) F;
+            /* alloc_in_region<C, F>(alloc, r); // unreachable */
+        }
+
+        // Now create some subregions.
+        auto* r1 = new (alloc) F;
+        {
+            UsingRegion rc(r1);
+            r1->c1 = new (alloc, r1) C;
+            r1->c1->c1 = new (alloc, r1) C;
+            r1->c1->c1->c1 = new (alloc, r1) C;
+            alloc_in_region<F, F, F>(alloc, r1); // unreachable
+        }
+
+        /* auto* r2 = new (alloc) C; */
+        /* { */
+        /*     UsingRegion rc(r2); */
+        /*     r2->c1 = new (alloc, r2) C; */
+        /*     r2->f1 = new (alloc, r2) F; */
+        /*     r2->f1->c1 = new (alloc, r2) C; */
+        /*     r2->f1->f1 = new (alloc, r2) F; */
+        /*     alloc_in_region<C, C>(alloc, r2); // unreachable */
+        /* } */
+
+        /* auto* r3 = new (alloc) F; */
+        /* { */
+        /*     UsingRegion rc(r3); */
+        /*     r3->f1 = new (alloc, r3) F; */
+        /*     alloc_in_region<F, F>(alloc, r3); // unreachable */
+        /* } */
+
+
+        /* // Link the subregions together. */
+        r->f2 = r1;
+        /* r->f1->c1 = r2; */
+        /* r2->f1->f1->f1 = r3; */
+
+        {
+            UsingRegion rc(r);
+            Region::release(alloc, r);
+        }
+
+    } else {
+
     // Start with a single region.
     auto* r = new (alloc) F;
     r->c1 = new (alloc, r) C;
@@ -100,6 +153,7 @@ namespace memory_subregion
     r2->f1->f1->f1 = r3;
 
     Region::release(alloc, r);
+    }
     snmalloc::debug_check_empty<snmalloc::Alloc::StateHandle>();
     check(live_count == 0);
   }
@@ -344,7 +398,7 @@ namespace memory_subregion
   {
     test_subregion_singleton<RegionType::Trace>();
     test_subregion_singleton<RegionType::Arena>();
-    test_subregion_singleton<RegionType::Rc>();
+    /* test_subregion_singleton<RegionType::Rc>(); */
 
     test_subregion_basic<RegionType::Trace>();
     test_subregion_basic<RegionType::Arena>();

@@ -59,9 +59,9 @@ int main(int argc, char** argv)
   /* memory_merge::run_test(); */
   /* memory_gc::run_test(); */
   memory_rc::run_test();
-  /* memory_subregion::run_test(); */
+  memory_subregion::run_test();
 
-  test_dealloc();
+  /* test_dealloc(); */
 
   return 0;
 }

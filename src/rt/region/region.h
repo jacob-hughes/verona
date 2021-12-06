@@ -331,8 +331,18 @@ namespace verona::rt
           ((RegionArena*)r)->release_internal(alloc, o, collect);
           return;
         case RegionType::Rc:
-          ((RegionRc*)r)->release_internal(alloc, o, collect);
-          return;
+          {
+              RegionBase* current = opened_region();
+              if (!o->is_opened()) {
+                  RegionRc::open(o);
+                  set_opened_region(r);
+                  ((RegionRc*)r)->release_internal(alloc, o, collect);
+                  set_opened_region(current);
+              } else {
+                  ((RegionRc*)r)->release_internal(alloc, o, collect);
+              }
+              return;
+          }
         default:
           abort();
       }

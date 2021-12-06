@@ -944,7 +944,7 @@ namespace verona::rt
     {
       // Should be the entry-point of the region.
       assert(
-        (region == nullptr) || (region->get_class() == Object::RegionMD::ISO));
+        (region == nullptr) || (region->get_class() == Object::RegionMD::ISO) || (region->get_class() == Object::RegionMD::OPEN_ISO));
       // Have to be careful about internal references to the entry point for the
       // `region` i.e. when obj == region we are refering to the entry point
       // from inside the region and should not treat this as a subregion
